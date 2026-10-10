@@ -1,0 +1,24 @@
+import 'dotenv/config';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+
+const base = 'http://localhost:3000';
+const login = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: process.env.LOGIN_EMAIL, password: process.env.LOGIN_PASSWORD }) });
+assert.equal(login.status, 200, 'login');
+const cookie = login.headers.get('set-cookie')?.split(';')[0];
+assert.ok(cookie, 'session cookie');
+const post = async (path, body) => fetch(`${base}${path}`, { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const preview = await post('/api/preview-template', { outcome: 'gain', layoutVariant: 1, message: 'Gracias, bro. Revisé las operaciones y me alegró ver el cierre de hoy.', reply: '¡Felicitaciones! Sigamos con el plan y el control del riesgo.' });
+assert.equal(preview.status, 200, 'preview creation');
+const data = await preview.json();
+assert.equal(data.layoutVariant, 1);
+const image = await fetch(`${base}${data.previewUrl}`, { headers: { Cookie: cookie } });
+assert.equal(image.status, 200, 'preview image');
+const previewBytes = Buffer.from(await image.arrayBuffer());
+const saved = await post('/api/generate-template', { previewToken: data.previewToken });
+assert.equal(saved.status, 201, 'save preview');
+const savedData = await saved.json();
+const file = await fetch(`${base}${savedData.image.url}`, { headers: { Cookie: cookie } });
+assert.equal(file.status, 200, 'gallery file');
+assert.equal(crypto.createHash('sha256').update(previewBytes).digest('hex'), crypto.createHash('sha256').update(Buffer.from(await file.arrayBuffer())).digest('hex'), 'saved pixels equal preview');
+console.log('Login, preview, save, gallery file and pixel identity: OK');

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f2">
+  <meta name="description" content="Estudio privado para crear imágenes de conversaciones ficticias con inteligencia artificial.">
+  <title>Chat Studio — Generador privado</title>
+  <link rel="stylesheet" href="/styles.css?v=2">
+  <script src="/app.js?v=3" defer></script>
+</head>
+<body>
+  <div class="login-screen" id="login-screen">
+    <form class="login-form" id="login-form">
+      <h1>Generador de imágenes</h1>
+      <p>Inicia sesión para continuar.</p>
+      <label for="email">Correo</label>
+      <input id="email" name="email" type="email" placeholder="equipo@correo.com" autocomplete="username" required>
+      <label for="password">Contraseña</label>
+      <input id="password" name="password" type="password" placeholder="Contraseña" autocomplete="current-password" required>
+      <div class="form-message" id="login-error" role="alert"></div>
+      <button class="button primary login-button" type="submit">Entrar</button>
+    </form>
+  </div>
+
+  <div class="app-shell hidden" id="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand sidebar-brand" href="#top"><span class="brand-icon">c.</span><span>chat studio</span></a>
+      <button class="side-link active" id="new-chat">＋ Nueva imagen</button>
+      <a class="side-link" href="#gallery">Galería <span class="side-count" id="gallery-count">0</span></a>
+      <div class="sidebar-bottom"><div class="quota-card"><strong>Automático activo</strong><p>Se generan 10 imágenes al día <span id="automatic-mode-label">con plantilla local.</span><br><span id="quota-number">0</span> creadas hoy.</p></div><div class="profile"><div class="profile-avatar">C</div><div class="profile-info"><strong>Cuenta compartida</strong><span>Privada</span></div><button id="logout-button" class="icon-button logout" title="Cerrar sesión" aria-label="Cerrar sesión">Salir</button></div></div>
+    </aside>
+    <main class="main-content" id="top">
+      <header class="topbar"><button class="mobile-menu icon-button" id="mobile-menu" aria-label="Abrir menú">☰</button><div class="breadcrumbs"><strong>Generador de imágenes</strong></div><div class="topbar-right"><span class="status-dot"></span><span>Privado</span><button id="logout-top" class="icon-button" title="Cerrar sesión">Salir</button></div></header>
+      <section class="composer-card" aria-label="Crear imagen">
+        <div class="composer-label"><div><strong>Describe la conversación que quieres crear</strong></div></div>
+        <form id="generate-form"><label class="visually-hidden" for="prompt">Descripción de imagen</label><textarea id="prompt" name="prompt" maxlength="1500" placeholder="Ej. Una conversación amistosa en un chat de iPhone, con mensajes breves celebrando un nuevo proyecto…" required></textarea><div class="composer-footer"><div class="composer-hints"><span>Trading: compositor local sin API · Otras escenas: Gemini Flash Lite</span></div><div class="composer-actions"><span class="char-count"><span id="char-count">0</span>/1500</span><label class="visually-hidden" for="template-outcome">Resultado de plantilla</label><select id="template-outcome" aria-label="Resultado de plantilla"><option value="gain">Ganancia</option><option value="loss">Pérdida</option></select><button class="button" type="button" id="template-button">Crear con plantilla gratis</button><button class="button primary generate-button" type="submit" id="generate-button"><span class="button-spark">✳</span><span>Generar imagen</span></button></div></div></form>
+        <section id="template-preview-panel" class="template-preview hidden" aria-label="Vista previa de plantilla"><div class="preview-controls"><h3>Vista previa antes de guardar</h3><label>Escena<select id="preview-layout"><option value="0">Foto con pie</option><option value="1">Foto y mensaje posterior</option><option value="2">Chat desplazado</option></select></label><label>Agradecimiento<textarea id="preview-message" maxlength="700"></textarea></label><label>Respuesta<textarea id="preview-reply" maxlength="350"></textarea></label><div class="preview-actions"><button class="button" type="button" id="preview-refresh">Actualizar vista previa</button><button class="button primary" type="button" id="preview-save">Guardar en galería</button></div></div><img id="preview-image" alt="Vista previa de la conversación" /></section>
+        <div class="composer-footer"><div class="composer-hints"><span>¿Ya tienes una captura auténtica completa? Impórtala sin editarla.</span></div><div class="composer-actions"><input id="authentic-file" type="file" accept="image/png,image/jpeg" aria-label="Captura original PNG o JPEG"><button class="button" type="button" id="authentic-import-button">Importar original</button></div></div>
+        <div class="generate-error" id="generate-error" role="alert"></div>
+      </section>
+      <section class="phrase-card" aria-label="Frases del chat">
+        <div class="section-heading"><h2>Frases para el chat</h2></div>
+        <p class="phrase-help">Guarda ejemplos de agradecimiento con el tono que buscas. Las plantillas locales rotan estas frases; <code>{{saludo}}</code>, <code>{{tratamiento}}</code>, <code>{{profit}}</code> y <code>{{cierre}}</code> se ajustan a la hora, el país, el resultado y el día. Para alternar palabras, usa <code>[[bro|hermano]]</code>.</p>
+        <form id="phrase-form">
+          <div class="phrase-controls"><label for="phrase-outcome">Resultado</label><select id="phrase-outcome"><option value="gain">Ganancia</option><option value="loss">Pérdida</option></select></div>
+          <label class="visually-hidden" for="phrase-body">Texto de la frase</label>
+          <textarea id="phrase-body" maxlength="260" placeholder="{{saludo}}, {{tratamiento}}. [[Qué alegría|Estoy emocionado]] por el resultado de {{profit}}. Gracias por ayudarme a seguir el plan." required></textarea>
+          <div class="phrase-actions"><button class="button primary" id="phrase-save" type="submit">Guardar frase</button><button class="button hidden" id="phrase-cancel" type="button">Cancelar edición</button></div>
+          <div class="generate-error" id="phrase-error" role="alert"></div>
+        </form>
+        <div id="phrase-list" class="phrase-list"></div>
+      </section>
+      <section class="gallery-section" id="gallery"><div class="section-heading"><div><h2>Imágenes generadas <span id="collection-total">(0)</span></h2></div><div class="gallery-tools"><button class="filter-button" id="refresh-button" title="Actualizar galería">↻</button></div></div><div id="gallery-grid" class="gallery-grid"></div><div id="empty-state" class="empty-state"><h3>Aún no hay imágenes</h3><p>Escribe una descripción arriba para generar la primera.</p></div></section>
+      <footer class="app-footer"><span>Imágenes ficticias creadas con plantilla o IA</span></footer>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <template id="image-card-template"><article class="image-card"><div class="image-wrap"><img alt="Imagen generada de una conversación"><div class="image-overlay"><a class="download-button" href="#" download>Descargar</a></div></div><div class="image-meta"><div class="image-title"><div><strong></strong><span class="image-time"></span></div></div><button class="more-button" aria-label="Ver descripción">···</button></div><div class="prompt-preview"></div></article></template>
+</body>
+</html>
