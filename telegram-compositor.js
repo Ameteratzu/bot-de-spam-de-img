@@ -190,17 +190,20 @@ function header(scene, backIcon) {
   return `${statusBar}<g filter="url(#glass)"><rect x="108" y="116" width="149" height="72" rx="36" fill="#eff8df" fill-opacity=".78"/><image href="data:image/png;base64,${backIcon}" x="127" y="130" width="48" height="48"/><rect x="169" y="133" width="68" height="39" rx="20" fill="#101713"/><text x="203" y="160" text-anchor="middle" font-size="23" fill="#fff">${counter}</text><rect x="289" y="116" width="357" height="72" rx="36" fill="#f4fae8" fill-opacity=".81"/>${nameContent}<text x="468" y="177" text-anchor="middle" font-size="19" fill="${connectionColor}">${esc(connectionStatus)}</text><circle cx="744" cy="148" r="39" fill="#f6f9e9" fill-opacity=".93"/><circle cx="744" cy="148" r="34" fill="${esc(color)}"/><text x="744" y="158" text-anchor="middle" font-size="25" font-weight="650" fill="#fff">${esc(label)}</text></g>`;
 }
 
-async function media(scene, mode) {
+async function media(scene) {
   const source = scene.referencePath || await tradeImage(scene);
   const meta = await sharp(source).metadata();
-  let input = source;
-  let h = meta.height;
-  if (mode === 'trim') {
-    const top = scene.referencePath ? scene.referenceTopHeight : 210 + (scene.rows?.length || 3) * 83 + 5 * 32;
-    h = Math.min(meta.height, Math.max(390, top + 54));
-    input = await sharp(source).extract({ left: 0, top: 0, width: meta.width, height: h }).png().toBuffer();
-  }
-  const scale = Math.min(488 / meta.width, 640 / h);
+  // Trade screenshots have a large empty canvas below their summary. Crop only
+  // that blank tail so the operations and balance remain legible in the chat.
+  const contentBottom = scene.referencePath
+    ? Number(scene.referenceTopHeight) || 650
+    : 210 + (scene.rows?.length || 3) * 83 + 5 * 32;
+  const h = Math.min(meta.height, Math.max(390, contentBottom + 28));
+  const input = await sharp(source)
+    .extract({ left: 0, top: 0, width: meta.width, height: h })
+    .png()
+    .toBuffer();
+  const scale = Math.min(488 / meta.width, 690 / h);
   const width = Math.round(meta.width * scale);
   const height = Math.round(h * scale);
   return { buffer: await sharp(input).resize(width, height, { fit: 'fill' }).png().toBuffer(), width, height };
@@ -252,10 +255,10 @@ export async function renderTelegramChat(scene) {
     schedule: await telegramIcon('ScheduleInput@3x (2).png', 52),
     readChecks: await telegramIcon('readchecks_telegram.png', 42, '#549161')
   };
-  const photo = await media(scene, variant === 1 ? 'trim' : 'full');
+  const photo = await media(scene);
   const incoming = String(scene.messages?.find((message) => message.role === 'received')?.text || scene.message || '').replace(/\s+/g, ' ').trim();
   const reply = String(scene.messages?.find((message) => message.role === 'sent')?.text || scene.reply || '').replace(/\s+/g, ' ').trim();
-  const responseImage = scene.showSticker === undefined ? !scene.loss : Boolean(scene.showSticker);
+  const responseImageRequested = scene.showSticker === undefined ? !scene.loss : Boolean(scene.showSticker);
   const incomingTime = scene.chatTime || '7:10 PM';
   const replyTime = scene.replyTime || '7:17 PM';
   const incomingLines = wrapForBubble(incoming, 540, MESSAGE_FONT_SIZE, incomingTime);
@@ -263,29 +266,39 @@ export async function renderTelegramChat(scene) {
   const photoX = 112;
   const photoY = 174;
   const mediaBoxW = photo.width + 12;
-  const mediaBoxH = photo.height + 12;
+  // Reserve only a compact footer after the data table for Telegram's media
+  // timestamp. Keeping it outside the source pixels prevents covering Balance.
+  const mediaBoxH = photo.height + 54;
   const message = incomingBubble({ x: 112, y: photoY + mediaBoxH + 10, maxWidth: 620, lines: incomingLines, time: incomingTime });
   const responseWidth = Math.min(630, Math.max(260, Math.ceil(Math.max(...replyLines.map((line) => textWidth(line, MESSAGE_FONT_SIZE)), textWidth(replyLines.at(-1), MESSAGE_FONT_SIZE) + textWidth(replyTime, MESSAGE_TIME_SIZE) + 40) + 38)));
   const responseX = 780 - responseWidth;
   const responseY = photoY + mediaBoxH + message.height + 18;
   const textResponse = outgoingBubble({ x: responseX, y: responseY, width: responseWidth, lines: replyLines, time: replyTime }, icons.readChecks);
   const imageY = responseY;
-  const stickerPng = responseImage ? (await sticker(scene.stickerAsset ?? scene.avatarAsset)).toString('base64') : '';
   const stickerReply = outgoingBubble({ x: responseX, y: imageY + 280, width: responseWidth, lines: replyLines, time: replyTime }, icons.readChecks);
+  const stickerHeight = 280 + stickerReply.height;
+  // Keep tall trade receipts complete. Use a text reply when a sticker would
+  // force the receipt or the reply underneath the fixed composer.
+  const responseImage = responseImageRequested && responseY + stickerHeight <= COMPOSER_TOP - 18;
+  const stickerPng = responseImage ? (await sticker(scene.stickerAsset ?? scene.avatarAsset)).toString('base64') : '';
   const imageResponse = `<g><image href="data:image/png;base64,${stickerPng}" x="490" y="${imageY}" width="290" height="270" preserveAspectRatio="xMidYMid meet"/><text x="738" y="${imageY + 252}" text-anchor="end" font-size="16" fill="#fff" stroke="#4f6d52" stroke-opacity=".38" stroke-width="1">${esc(replyTime)}</text><image href="data:image/png;base64,${icons.readChecks}" x="742" y="${imageY + 232}" width="25" height="25"/>${stickerReply.svg}</g>`;
-  const responseHeight = responseImage ? 280 + stickerReply.height : textResponse.height;
+  const responseHeight = responseImage ? stickerHeight : textResponse.height;
   const bottom = responseY + responseHeight;
-  const scroll = Math.max(0, bottom - 1432) + (variant === 2 ? 175 : 0);
+  // A small scroll offset varies the third layout while preserving the rows at
+  // the top of the attached trading screenshot.
+  const scroll = Math.min(Math.max(0, bottom - (COMPOSER_TOP - 18)) + (variant === 2 ? 32 : 0), 60);
   const mediaTop = photoY - scroll;
   const msgTop = photoY + mediaBoxH + 10 - scroll;
   const resTop = responseY - scroll;
   const attachmentTime = scene.chatTime || '7:08 PM';
-  const attachment = `<rect x="${photoX}" y="${mediaTop}" width="${mediaBoxW}" height="${mediaBoxH}" rx="20" fill="#fff"/><defs><clipPath id="mediaMask"><rect x="${photoX + 6}" y="${mediaTop + 6}" width="${photo.width}" height="${photo.height}" rx="15"/></clipPath></defs><g clip-path="url(#mediaMask)"><image href="data:image/png;base64,${photo.buffer.toString('base64')}" x="${photoX + 6}" y="${mediaTop + 6}" width="${photo.width}" height="${photo.height}"/></g><rect x="${photoX + mediaBoxW - 112}" y="${mediaTop + mediaBoxH - 48}" width="96" height="36" rx="18" fill="#777" fill-opacity=".72"/><text x="${photoX + mediaBoxW - 24}" y="${mediaTop + mediaBoxH - 23}" text-anchor="end" font-size="${MESSAGE_TIME_SIZE}" fill="#fff">${esc(attachmentTime)}</text>`;
+  const mediaTimeY = mediaTop + photo.height + 13;
+  const attachment = `<rect x="${photoX}" y="${mediaTop}" width="${mediaBoxW}" height="${mediaBoxH}" rx="20" fill="#fff"/><defs><clipPath id="mediaMask"><rect x="${photoX + 6}" y="${mediaTop + 6}" width="${photo.width}" height="${photo.height}" rx="15"/></clipPath></defs><g clip-path="url(#mediaMask)"><image href="data:image/png;base64,${photo.buffer.toString('base64')}" x="${photoX + 6}" y="${mediaTop + 6}" width="${photo.width}" height="${photo.height}"/></g><rect x="${photoX + mediaBoxW - 112}" y="${mediaTimeY}" width="96" height="32" rx="16" fill="#777" fill-opacity=".72"/><text x="${photoX + mediaBoxW - 24}" y="${mediaTimeY + 22}" text-anchor="end" font-size="${MESSAGE_TIME_SIZE}" fill="#fff">${esc(attachmentTime)}</text>`;
   const shiftedMessage = incomingBubble({ x: 112, y: msgTop, maxWidth: 620, lines: incomingLines, time: incomingTime }).svg;
   const shiftedResponse = responseImage
     ? `<g transform="translate(0 ${resTop - imageY})">${imageResponse}</g>`
     : outgoingBubble({ x: responseX, y: resTop, width: responseWidth, lines: replyLines, time: replyTime }, icons.readChecks).svg;
   const labelY = variant === 2 ? 198 : 203;
+  const disclosure = `<g><rect x="620" y="${labelY}" width="184" height="27" rx="14" fill="#f4f8e8" fill-opacity=".9"/><text x="712" y="${labelY + 18}" text-anchor="middle" font-size="12" font-weight="700" fill="#536b55">CONTENIDO GENERADO</text></g>`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><style>@font-face{font-family:ChatInter;src:url(data:font/ttf;base64,${FONT_DATA}) format('truetype')}text{font-family:ChatInter,Arial,sans-serif}</style>${wallpaper(variant)}<g clip-path="url(#chatClip)">${attachment}${shiftedMessage}${shiftedResponse}</g>${disclosure}${header(scene, icons.back)}${composer(icons)}<rect x="338" y="1580" width="224" height="7" rx="4" fill="#111812"/></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
