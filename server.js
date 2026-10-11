@@ -9,7 +9,6 @@ import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
-import { GoogleGenAI } from '@google/genai';
 import sharp from 'sharp';
 import { renderTelegramChat, conversationText } from './telegram-compositor.js';
 import { themeForAutomaticSlot, themeForManualCursor } from './scene-theme.js';
@@ -20,8 +19,6 @@ const TIME_ZONE = process.env.APP_TIMEZONE || 'America/Lima';
 const COOKIE_SECURE = process.env.COOKIE_SECURE === undefined
   ? process.env.NODE_ENV === 'production'
   : process.env.COOKIE_SECURE === 'true';
-const MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-lite-image';
-const AUTOMATIC_RENDER_MODE = 'template';
 const ALEXANDER_EMAIL = (process.env.ALEXANDER_EMAIL || 'alexander@testimoniostelegram.com').trim().toLowerCase();
 const JORGE_EMAIL = (process.env.JORGE_EMAIL || 'jorge@testimoniostelegram.com').trim().toLowerCase();
 const DATA_DIR = path.join(__dirname, 'data');
@@ -86,7 +83,9 @@ function ensureColumn(table, column, definition) {
 // Existing installations started with one shared gallery. Preserve those
 // records for Alexander, then isolate all new records by authenticated email.
 ensureColumn('images', 'owner_email', `TEXT NOT NULL DEFAULT '${ALEXANDER_EMAIL.replaceAll("'", "''")}'`);
+ensureColumn('images', 'batch_id', 'TEXT');
 ensureColumn('template_previews', 'owner_email', `TEXT NOT NULL DEFAULT '${ALEXANDER_EMAIL.replaceAll("'", "''")}'`);
+ensureColumn('phrase_templates', 'owner_email', `TEXT NOT NULL DEFAULT '${ALEXANDER_EMAIL.replaceAll("'", "''")}'`);
 db.exec(`
   CREATE INDEX IF NOT EXISTS images_owner_created_idx ON images(owner_email, created_at DESC);
   CREATE INDEX IF NOT EXISTS previews_owner_idx ON template_previews(owner_email);
@@ -102,6 +101,23 @@ db.exec(`
     updated_at TEXT NOT NULL,
     PRIMARY KEY (owner_email, day_key, slot)
   );
+  CREATE TABLE IF NOT EXISTS generation_batches (
+    id TEXT PRIMARY KEY,
+    owner_email TEXT NOT NULL,
+    day_key TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('automatic', 'manual')),
+    quantity INTEGER NOT NULL CHECK (quantity BETWEEN 1 AND 50),
+    completed INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS one_automatic_batch_per_day ON generation_batches(owner_email, day_key, kind) WHERE kind = 'automatic';
+  CREATE INDEX IF NOT EXISTS generation_batches_owner_created_idx ON generation_batches(owner_email, created_at DESC);
+  CREATE INDEX IF NOT EXISTS images_owner_day_idx ON images(owner_email, day_key, created_at DESC);
+  CREATE INDEX IF NOT EXISTS images_batch_idx ON images(batch_id);
 `);
 
 const defaultPhrases = [
@@ -110,12 +126,12 @@ const defaultPhrases = [
   ['gain', '{{saludo}}, [[líder|bro]]. Las operaciones cerraron con {{profit}} {{emoji}}. Gracias por ayudarme a tener paciencia y cuidar cada entrada.'],
   ['gain', '{{saludo}}, {{tratamiento}}. Me alegró cerrar con {{profit}} {{emoji}}. Gracias por tu tiempo y por acompañarme en el proceso.'],
   ['loss', '{{saludo}}, {{tratamiento}}. Hoy cerré con {{profit}} {{emoji}}. Me toca revisar las entradas; gracias por ayudarme a volver al plan.'],
-  ['loss', '{{saludo}}, líder. La sesión terminó en {{profit}} {{emoji}}. Gracias por ayudarme a revisar el riesgo y ver qué puedo mejorar.']
+  ['loss', '{{saludo}}, líder. La sesión terminó en {{profit}} {{emoji}}. Gracias por ayudarme a revisar cada detalle y ver qué puedo mejorar.']
 ];
 const guidancePhrases = [
   '{{saludo}}, líder. Estoy encantado de trabajar con usted y aprender a usar la herramienta. Al principio tenía mis dudas, pero me animé a probarla y hoy cerré con {{profit}}. Gracias por guiarme {{emoji}}.',
   '{{saludo}}, {{tratamiento}}. Estoy demasiado emocionado: hoy cerré con {{profit}}. Lo mejor es compartir este proceso con una comunidad que me ayuda a aprender. ¡Vamos por más, líder! {{emoji}}',
-  'Hola, hermano. Comencé con muchas dudas y mira cómo voy avanzando: {{profit}} en esta sesión. Gracias por la herramienta y por estar pendiente; quiero seguir aprendiendo a manejar mejor el riesgo.',
+  'Hola, hermano. Comencé con muchas dudas y mira cómo voy avanzando: {{profit}} en esta sesión. Gracias por la herramienta y por estar pendiente; quiero seguir aprendiendo a seguir mejorando cada día.',
   'Hermano, estoy emocionado con todo lo que estoy aprendiendo. Compartir este proceso con la comunidad me motiva muchísimo. Cerré con {{profit}}; seguimos enfocados, líder {{emoji}}.',
   'Líder, tenía que escribirle. Qué bien se siente entender cosas que antes me parecían complicadas. Gracias por la paciencia y por compartir sus conocimientos. Hoy cerré con {{profit}}. ¡Vamos por más! {{emoji}}',
   'Hermano, me alegra dedicarle tiempo a aprender esto. Hoy cerré con {{profit}} y quería darle las gracias por estar pendiente. Seguimos firmes y aprendiendo {{emoji}}.'
@@ -141,7 +157,7 @@ const compactPhraseUpgrade = db.prepare('UPDATE phrase_templates SET body = ? WH
   [defaultPhrases[2][1], '{{saludo}}, [[líder|bro]]. Te comparto las operaciones que dejé corriendo: cerraron con {{profit}} de beneficio. Me emocionó verlo; gracias por ayudarme a tener paciencia.'],
   [defaultPhrases[3][1], '{{saludo}}, {{tratamiento}}. un resultado de {{profit}} me alegró el día. Agradecido contigo por el tiempo y los consejos; eres un gran apoyo.'],
   [defaultPhrases[4][1], '{{saludo}}, {{tratamiento}}. Hoy el resultado fue {{profit}}. Me frustró un poco, pero gracias por ayudarme a revisar las entradas y volver al plan con más calma.'],
-  [defaultPhrases[5][1], '{{saludo}}, líder. Esta sesión simulada terminó en {{profit}}. Gracias por acompañarme a entender el error; aprendí más revisando el riesgo que mirando solo el resultado.']
+  [defaultPhrases[5][1], '{{saludo}}, líder. Esta sesión simulada terminó en {{profit}}. Gracias por acompañarme a entender el error; aprendí más revisando cada detalle que mirando solo el resultado.']
 ].forEach(([updated, previous]) => compactPhraseUpgrade.run(updated, previous));
 
 // Add the new guidance once on existing installations. The marker also keeps
@@ -158,12 +174,12 @@ db.transaction(() => {
   db.prepare('INSERT INTO phrase_library_meta (key, value) VALUES (?, ?)').run(key, '1');
 })();
 
-function nextPhraseIndex(loss, advance = true) {
+function nextPhraseIndex(loss, advance = true, ownerEmail = ALEXANDER_EMAIL) {
   return db.transaction(() => {
     const outcome = loss ? 'loss' : 'gain';
-    const key = `phrase_cursor_${outcome}`;
+    const key = `phrase_cursor_${ownerEmail}_${outcome}`;
     const saved = db.prepare('SELECT value FROM phrase_library_meta WHERE key = ?').get(key);
-    const count = db.prepare('SELECT COUNT(*) AS count FROM phrase_templates WHERE outcome = ?').get(outcome).count;
+    const count = db.prepare('SELECT COUNT(*) AS count FROM phrase_templates WHERE owner_email = ? AND outcome = ?').get(ownerEmail, outcome).count;
     const start = loss ? 0 : Math.max(0, count - guidancePhrases.length);
     const index = saved ? Number.parseInt(saved.value, 10) || 0 : start;
     if (advance) {
@@ -179,8 +195,34 @@ function nextPhraseIndex(loss, advance = true) {
   [defaultPhrases[2][1], '{{saludo}}, [[líder|bro]]. Las operaciones cerraron con {{profit}}. Gracias por ayudarme a tener paciencia y cuidar cada entrada.'],
   [defaultPhrases[3][1], '{{saludo}}, {{tratamiento}}. Me alegró cerrar con {{profit}} {{emoji}}. Gracias por tu tiempo y por acompañarme en el proceso.'],
   [defaultPhrases[4][1], '{{saludo}}, {{tratamiento}}. Hoy cerré con {{profit}} {{emoji}}. Me toca revisar las entradas; gracias por ayudarme a volver al plan.'],
-  [defaultPhrases[5][1], '{{saludo}}, líder. La sesión terminó en {{profit}} {{emoji}}. Gracias por ayudarme a revisar el riesgo y ver qué puedo mejorar.']
+  [defaultPhrases[5][1], '{{saludo}}, líder. La sesión terminó en {{profit}} {{emoji}}. Gracias por ayudarme a revisar cada detalle y ver qué puedo mejorar.']
 ].forEach(([updated, previous]) => compactPhraseUpgrade.run(updated, previous));
+
+// Give each account its own initial copy. Existing shared phrases belong to
+// Alexander and are copied once to Jorge; all subsequent changes are private.
+db.transaction(() => {
+  const key = 'phrases_split_by_owner_v1';
+  if (db.prepare('SELECT value FROM phrase_library_meta WHERE key = ?').get(key)) return;
+  db.prepare('UPDATE phrase_templates SET owner_email = ? WHERE owner_email IS NULL OR owner_email = ?').run(ALEXANDER_EMAIL, '');
+  const existing = db.prepare('SELECT outcome, body, created_at FROM phrase_templates WHERE owner_email = ? ORDER BY id').all(ALEXANDER_EMAIL);
+  const insert = db.prepare('INSERT INTO phrase_templates (outcome, body, created_at, owner_email) VALUES (?, ?, ?, ?)');
+  for (const phrase of existing) insert.run(phrase.outcome, phrase.body, phrase.created_at, JORGE_EMAIL);
+  db.prepare('INSERT INTO phrase_library_meta (key, value) VALUES (?, ?)').run(key, '1');
+})();
+
+// Keep previously saved starter phrases aligned with the current tone.
+for (const [from, to] of [
+  ['con cabeza fría y cuidando el riesgo', 'con constancia y mucha disciplina'],
+  ['con cabeza fría y manteniendo la disciplina', 'con constancia y mucha disciplina'],
+  ['manejar mejor el riesgo', 'seguir mejorando cada día'],
+  ['revisando el riesgo', 'revisando cada detalle'],
+  ['revisar el riesgo', 'revisar cada detalle'],
+  ['cuidando el riesgo', 'manteniendo la disciplina'],
+  ['atentos al riesgo', 'enfocados en el proceso'],
+  ['buen manejo del riesgo', 'mucha disciplina']
+]) {
+  db.prepare('UPDATE phrase_templates SET body = REPLACE(body, ?, ?) WHERE body LIKE ?').run(from, to, `%${from}%`);
+}
 // Migrate the exact built-in templates saved by earlier releases to the
 // contextual emoji placeholder; user-edited phrase bodies remain untouched.
 [
@@ -189,7 +231,7 @@ function nextPhraseIndex(loss, advance = true) {
   [defaultPhrases[2][1], '{{saludo}}, [[líder|bro]]. Las operaciones cerraron con {{profit}}. Gracias por ayudarme a tener paciencia y cuidar cada entrada.'],
   [defaultPhrases[3][1], '{{saludo}}, {{tratamiento}}. Me alegró cerrar con {{profit}}. Gracias por tu tiempo y por acompañarme en el proceso.'],
   [defaultPhrases[4][1], '{{saludo}}, {{tratamiento}}. Hoy cerré con {{profit}}. Me toca revisar las entradas; gracias por ayudarme a volver al plan.'],
-  [defaultPhrases[5][1], '{{saludo}}, líder. La sesión terminó en {{profit}}. Gracias por ayudarme a revisar el riesgo y ver qué puedo mejorar.']
+  [defaultPhrases[5][1], '{{saludo}}, líder. La sesión terminó en {{profit}}. Gracias por ayudarme a revisar cada detalle y ver qué puedo mejorar.']
 ].forEach(([updated, previous]) => compactPhraseUpgrade.run(updated, previous));
 
 const app = express();
@@ -302,12 +344,12 @@ const avatarColors = ['#456c93', '#8062a8', '#ad725e', '#4c8279', '#ac6e89', '#5
 const composeSequence = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
 const regionalStyles = [
   { label: 'Perú 🇵🇪', slang: 'causa', reply: '¡Qué alegría, líder! Felicitaciones por seguir el plan; sigamos con constancia.' },
-  { label: 'México 🇲🇽', slang: 'qué onda', reply: '¡Eso, bro! Felicidades por la disciplina; vamos paso a paso y cuidando el riesgo.' },
+  { label: 'México 🇲🇽', slang: 'qué onda', reply: '¡Eso, bro! Felicidades por la disciplina; vamos paso a paso y con disciplina.' },
   { label: 'Colombia 🇨🇴', slang: 'parce', reply: '¡Eso, parce! Qué gusto ver tu disciplina. Felicitaciones, seguimos firmes.' },
-  { label: 'Argentina 🇦🇷', slang: 'che', reply: '¡Bien ahí, che! Felicitaciones por sostener el plan. Seguimos atentos al riesgo.' },
-  { label: 'Chile 🇨🇱', slang: 'bacán', reply: '¡Buena, compa! Felicitaciones por la constancia; sigamos cuidando cada entrada.' },
+  { label: 'Argentina 🇦🇷', slang: 'che', reply: '¡Bien ahí, che! Felicitaciones por sostener el plan. Seguimos enfocados en el proceso.' },
+  { label: 'Chile 🇨🇱', slang: 'bacán', reply: '¡Buena, compa! Felicitaciones por la constancia; sigamos con constancia.' },
   { label: 'Ecuador 🇪🇨', slang: 'ñaño', reply: '¡Qué gusto, ñaño! Felicitaciones por la disciplina. Sigamos con calma.' },
-  { label: 'Venezuela 🇻🇪', slang: 'pana', reply: '¡Eso, pana! Felicitaciones por seguir el plan; vamos con calma y buen manejo del riesgo.' }
+  { label: 'Venezuela 🇻🇪', slang: 'pana', reply: '¡Eso, pana! Felicitaciones por seguir el plan; vamos con calma y mucha disciplina.' }
 ];
 const dominicanReplies = {
   gain: [
@@ -365,10 +407,10 @@ function clockTime(minute, includeMeridiem = false) {
   return includeMeridiem ? `${time} ${hour < 12 ? 'AM' : 'PM'}` : time;
 }
 
-function phraseForScene(loss, region, summary, variantIndex, contactIndex = 0, theme = 'day', avatarGender = 'male') {
+function phraseForScene(loss, region, summary, variantIndex, contactIndex = 0, theme = 'day', avatarGender = 'male', ownerEmail = ALEXANDER_EMAIL) {
   const outcome = loss ? 'loss' : 'gain';
   const emoji = contextEmojis[outcome][contactIndex % contextEmojis[outcome].length];
-  const options = db.prepare('SELECT id, body FROM phrase_templates WHERE outcome = ? ORDER BY id').all(outcome);
+  const options = db.prepare('SELECT id, body FROM phrase_templates WHERE owner_email = ? AND outcome = ? ORDER BY id').all(ownerEmail, outcome);
   const fallback = loss ? defaultPhrases[4][1] : defaultPhrases[0][1];
   const genderOptions = femaleConversationPhrases[outcome];
   const selected = avatarGender === 'female'
@@ -393,7 +435,7 @@ function phraseForScene(loss, region, summary, variantIndex, contactIndex = 0, t
   return { message: conversationText(message), emoji, chatTime: clockTime(minute - 2, true), replyTime: clockTime(minute, true), statusTime: clockTime(minute) };
 }
 
-function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIndex = 0, layoutIndex = 0, theme = 'day') {
+function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIndex = 0, layoutIndex = 0, theme = 'day', ownerEmail = ALEXANDER_EMAIL) {
   const lot = crypto.randomInt(4, 9);
   const entry = crypto.randomInt(410000, 424000);
   const date = dayKey().replaceAll('-', '.');
@@ -416,7 +458,7 @@ function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIn
     color: avatarColors[contactIndex % avatarColors.length]
   };
   const avatarGender = femaleContactNames.has(contact.name.split(' ')[0]) ? 'female' : 'male';
-  const { message, emoji, chatTime, replyTime, statusTime } = phraseForScene(loss, region, summary, variantIndex, contactIndex, theme, avatarGender);
+  const { message, emoji, chatTime, replyTime, statusTime } = phraseForScene(loss, region, summary, variantIndex, contactIndex, theme, avatarGender, ownerEmail);
   contact.emoji = emoji || contact.emoji;
   const batteryPercent = crypto.randomInt(10, 101);
   const stickerAsset = contactIndex;
@@ -464,11 +506,11 @@ function automaticTradePrompt(slot, today, advancePhrase = true, themeOverride =
   const referenceIndex = (offset + slot) % pool;
   const regionIndex = (offset + slot) % regionalStyles.length;
   const loss = slot === 3 || slot === 7;
-  const phraseIndex = nextPhraseIndex(loss, advancePhrase);
+  const phraseIndex = nextPhraseIndex(loss, advancePhrase, ownerEmail);
   const ownerImageCount = db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ?').get(ownerEmail).count;
   const contactIndex = ownerImageCount + ownerOffset;
   const layoutIndex = contactIndex + [...today].reduce((total, char) => total + char.charCodeAt(0), 0);
-  return { referenceIndex, ...tradeBrief(tradeReferences[referenceIndex], regionalStyles[regionIndex], loss, phraseIndex, contactIndex, layoutIndex, theme) };
+  return { referenceIndex, ...tradeBrief(tradeReferences[referenceIndex], regionalStyles[regionIndex], loss, phraseIndex, contactIndex, layoutIndex, theme, ownerEmail) };
 }
 
 const nextManualTheme = db.transaction(() => {
@@ -485,26 +527,22 @@ function dayKey(date = new Date()) {
   }).format(date);
 }
 
-function localMinuteOfDay(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
-  const get = (type) => Number(parts.find((part) => part.type === type)?.value || 0);
-  return get('hour') * 60 + get('minute');
-}
-
 function requireAuth(req, res, next) {
   if (!req.session.authenticated || !req.session.email) return res.status(401).json({ error: 'Inicia sesión para continuar.' });
   next();
 }
 
 function loginAccounts() {
+  const sharedFallback = process.env.LOGIN_PASSWORD || '';
   return [
-    { email: ALEXANDER_EMAIL, password: process.env.ALEXANDER_PASSWORD || '' },
-    { email: JORGE_EMAIL, password: process.env.JORGE_PASSWORD || '' }
+    { email: ALEXANDER_EMAIL, password: process.env.ALEXANDER_PASSWORD || sharedFallback },
+    { email: JORGE_EMAIL, password: process.env.JORGE_PASSWORD || sharedFallback }
   ];
 }
 
 function hasLoginConfig() {
-  return Boolean(process.env.ALEXANDER_PASSWORD && process.env.JORGE_PASSWORD && process.env.SESSION_SECRET);
+  const accounts = loginAccounts();
+  return Boolean(accounts.every((account) => account.password) && process.env.SESSION_SECRET);
 }
 
 async function passwordMatches(password, expected) {
@@ -516,16 +554,22 @@ async function passwordMatches(password, expected) {
   );
 }
 
-app.use('/api', rateLimit({ windowMs: 60_000, limit: 90, standardHeaders: 'draft-8', legacyHeaders: false }));
+app.use('/api', rateLimit({
+  windowMs: 60_000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  skip: (req) => /^\/images\/[^/]+\/file$/.test(req.path)
+}));
 app.use('/api/login', rateLimit({ windowMs: 15 * 60_000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false }));
 
 app.get('/api/config', (_req, res) => {
-  res.json({ configured: hasLoginConfig(), timezone: TIME_ZONE, automaticRenderMode: AUTOMATIC_RENDER_MODE, manualImageModel: MODEL });
+  res.json({ configured: hasLoginConfig(), timezone: TIME_ZONE });
 });
 
 app.post('/api/login', async (req, res, next) => {
   try {
-    if (!hasLoginConfig()) return res.status(503).json({ error: 'Faltan ALEXANDER_PASSWORD, JORGE_PASSWORD o SESSION_SECRET en .env.' });
+    if (!hasLoginConfig()) return res.status(503).json({ error: 'Faltan las contraseñas de las cuentas o SESSION_SECRET en .env.' });
     const { email, password } = req.body || {};
     if (typeof email !== 'string' || typeof password !== 'string' || email.length > 254 || password.length > 256) {
       return res.status(400).json({ error: 'Correo o contraseña inválidos.' });
@@ -574,41 +618,7 @@ function imagePayload(row) {
   };
 }
 
-async function generateAndStoreImage(userPrompt, referenceIndex = null, ownerEmail) {
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const generationInstruction = `Create one polished 9:16 fictional mobile chat image based on this creative brief. Keep text in natural Spanish. Fictional financial results and testimonials must be clearly marked within the image; never present them as verified evidence. Brief: ${userPrompt}`;
-  const input = referenceIndex === null ? generationInstruction : [
-    { type: 'text', text: `${generationInstruction} Follow the brief: preserve source trade values when requested, or use the specified fictional values. Keep the visible generated-content disclosure.` },
-    { type: 'image', data: fs.readFileSync(path.join(REFERENCE_DIR, tradeReferences[referenceIndex].file)).toString('base64'), mime_type: 'image/png' }
-  ];
-  const interaction = await ai.interactions.create({
-    model: MODEL,
-    input,
-    response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: '9:16', image_size: '1K' }
-  });
-  const imageData = interaction.output_image?.data;
-  if (!imageData) throw new Error('Gemini respondió sin una imagen.');
-  const imageBuffer = Buffer.from(imageData, 'base64');
-  if (imageBuffer.length > 15 * 1024 * 1024) throw new Error('La imagen recibida excede el tamaño permitido.');
-  const id = crypto.randomUUID();
-  const randomName = pick(names);
-  const emoji = pick(emojis);
-  const displayName = `${randomName}${emoji ? ` ${emoji}` : ''}`;
-  const filename = `${dayKey()}-${randomName.toLowerCase()}-${id.slice(0, 8)}.jpg`;
-  const filePath = path.join(IMAGE_DIR, filename);
-  fs.writeFileSync(filePath, imageBuffer, { flag: 'wx' });
-  const createdAt = new Date().toISOString();
-  try {
-    db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type, owner_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, filename, displayName, userPrompt, createdAt, dayKey(new Date(createdAt)), 'image/jpeg', ownerEmail);
-  } catch (err) {
-    fs.rmSync(filePath, { force: true });
-    throw err;
-  }
-  return db.prepare('SELECT * FROM images WHERE id = ?').get(id);
-}
-
-async function generateAndStoreTemplate({ scene, prompt }, ownerEmail) {
+async function generateAndStoreTemplate({ scene, prompt }, ownerEmail, batchId = null) {
   const imageBuffer = await renderTelegramChat(scene);
   const id = crypto.randomUUID();
   const filename = `${dayKey()}-plantilla-${id.slice(0, 8)}.png`;
@@ -616,8 +626,8 @@ async function generateAndStoreTemplate({ scene, prompt }, ownerEmail) {
   fs.writeFileSync(filePath, imageBuffer, { flag: 'wx' });
   const createdAt = new Date().toISOString();
   try {
-    db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type, owner_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, filename, `${scene.contact.name} ${scene.contact.emoji}`, prompt, createdAt, dayKey(new Date(createdAt)), 'image/png', ownerEmail);
+    db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type, owner_email, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, filename, `${scene.contact.name} ${scene.contact.emoji}`, prompt, createdAt, dayKey(new Date(createdAt)), 'image/png', ownerEmail, batchId);
   } catch (err) {
     fs.rmSync(filePath, { force: true });
     throw err;
@@ -625,54 +635,97 @@ async function generateAndStoreTemplate({ scene, prompt }, ownerEmail) {
   return db.prepare('SELECT * FROM images WHERE id = ?').get(id);
 }
 
-let schedulerRunning = false;
-const jobInsert = db.prepare('INSERT OR IGNORE INTO user_daily_generation_jobs (owner_email, day_key, slot, prompt, status, updated_at) VALUES (?, ?, ?, ?, \'pending\', ?)');
-const jobUpdate = db.prepare('UPDATE user_daily_generation_jobs SET status = ?, attempts = ?, image_id = ?, error = ?, updated_at = ? WHERE owner_email = ? AND day_key = ? AND slot = ?');
+let batchProcessorRunning = false;
 
-async function runDailyGenerator() {
+function batchPayload(row) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    quantity: row.quantity,
+    completed: row.completed,
+    failed: row.failed,
+    status: row.status,
+    error: row.error,
+    dayKey: row.day_key,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function createBatch(ownerEmail, quantity, kind = 'manual') {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO generation_batches
+    (id, owner_email, day_key, kind, quantity, completed, failed, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 0, 0, 'pending', ?, ?)`)
+    .run(id, ownerEmail, dayKey(), kind, quantity, now, now);
+  return db.prepare('SELECT * FROM generation_batches WHERE id = ?').get(id);
+}
+
+function ensureDailyBatches() {
   if (!hasLoginConfig()) return;
-  if (schedulerRunning) return;
-  schedulerRunning = true;
-  try {
-    const today = dayKey();
-    const currentMinute = localMinuteOfDay();
-    const latestDueSlot = Math.min(9, Math.floor(currentMinute / 144));
-    for (const account of loginAccounts()) {
-      const insertDueJobs = db.transaction(() => {
-        for (let slot = 0; slot <= latestDueSlot; slot++) {
-          jobInsert.run(account.email, today, slot, automaticTradePrompt(slot, today, false, null, account.email).prompt, new Date().toISOString());
-        }
-      });
-      insertDueJobs();
-
-      while (true) {
-        const now = Date.now();
-        const job = db.prepare(`SELECT * FROM user_daily_generation_jobs
-          WHERE owner_email = ? AND day_key = ? AND (status = 'pending' OR (status = 'failed' AND attempts < 3 AND updated_at <= ?))
-          ORDER BY slot LIMIT 1`).get(account.email, today, new Date(now - 15 * 60_000).toISOString());
-        if (!job) break;
-        const attempts = job.attempts + 1;
-        jobUpdate.run('running', attempts, null, null, new Date().toISOString(), account.email, today, job.slot);
-        try {
-          const automatic = automaticTradePrompt(job.slot, today, true, null, account.email);
-          const image = await generateAndStoreTemplate(automatic, account.email);
-          jobUpdate.run('completed', attempts, image.id, null, new Date().toISOString(), account.email, today, job.slot);
-          console.log(`Automatic image ${job.slot + 1}/10 generated for ${account.email} on ${today}.`);
-        } catch (error) {
-          jobUpdate.run('failed', attempts, null, String(error.message || 'Generation failed').slice(0, 500), new Date().toISOString(), account.email, today, job.slot);
-          console.error(`Automatic image ${job.slot + 1}/10 failed for ${account.email} (attempt ${attempts}/3):`, error.message);
-          break;
-        }
+  const today = dayKey();
+  for (const account of loginAccounts()) {
+    const exists = db.prepare("SELECT id FROM generation_batches WHERE owner_email = ? AND day_key = ? AND kind = 'automatic'").get(account.email, today);
+    if (!exists) {
+      try { createBatch(account.email, 10, 'automatic'); }
+      catch (error) {
+        if (!String(error.message).includes('UNIQUE')) throw error;
       }
     }
-  } finally {
-    schedulerRunning = false;
   }
 }
 
+async function processGenerationBatches() {
+  if (batchProcessorRunning) return;
+  batchProcessorRunning = true;
+  try {
+    db.prepare("UPDATE generation_batches SET status = 'pending', updated_at = ? WHERE status = 'running'").run(new Date().toISOString());
+    while (true) {
+      const batch = db.prepare("SELECT * FROM generation_batches WHERE status = 'pending' ORDER BY CASE kind WHEN 'automatic' THEN 0 ELSE 1 END, created_at LIMIT 1").get();
+      if (!batch) break;
+      db.prepare("UPDATE generation_batches SET status = 'running', error = NULL, updated_at = ? WHERE id = ?").run(new Date().toISOString(), batch.id);
+      let completed = db.prepare('SELECT COUNT(*) AS count FROM images WHERE batch_id = ?').get(batch.id).count;
+      try {
+        for (let index = completed; index < batch.quantity; index++) {
+          const automatic = automaticTradePrompt(index % 10, batch.day_key, true, batch.kind === 'manual' ? nextManualTheme() : null, batch.owner_email);
+          await generateAndStoreTemplate(automatic, batch.owner_email, batch.id);
+          completed += 1;
+          db.prepare("UPDATE generation_batches SET completed = ?, updated_at = ? WHERE id = ?").run(completed, new Date().toISOString(), batch.id);
+        }
+        db.prepare("UPDATE generation_batches SET status = 'completed', completed = quantity, updated_at = ? WHERE id = ?").run(new Date().toISOString(), batch.id);
+      } catch (error) {
+        db.prepare("UPDATE generation_batches SET status = 'failed', completed = ?, failed = quantity - ?, error = ?, updated_at = ? WHERE id = ?")
+          .run(completed, completed, String(error.message || 'No se pudo completar la generación.').slice(0, 500), new Date().toISOString(), batch.id);
+        console.error(`Batch ${batch.id} failed for ${batch.owner_email}:`, error.message);
+      }
+    }
+  } finally {
+    batchProcessorRunning = false;
+  }
+}
+
+function wakeBatchProcessor() {
+  setImmediate(() => { void processGenerationBatches(); });
+}
+
+function runDailyGenerator() {
+  ensureDailyBatches();
+  wakeBatchProcessor();
+}
+
 app.get('/api/images', requireAuth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM images WHERE owner_email = ? ORDER BY created_at DESC LIMIT 120').all(req.session.email);
-  res.json({ images: rows.map(imagePayload), today: usageToday(req.session.email), timezone: TIME_ZONE });
+  const rows = db.prepare('SELECT * FROM images WHERE owner_email = ? ORDER BY day_key DESC, created_at DESC LIMIT 500').all(req.session.email);
+  const grouped = [];
+  for (const row of rows) {
+    let group = grouped.at(-1);
+    if (!group || group.dayKey !== row.day_key) {
+      group = { dayKey: row.day_key, images: [] };
+      grouped.push(group);
+    }
+    group.images.push(imagePayload(row));
+  }
+  res.json({ groups: grouped, total: rows.length, today: usageToday(req.session.email), timezone: TIME_ZONE });
 });
 
 function parsePhrase(req, res) {
@@ -695,161 +748,51 @@ function parsePhrase(req, res) {
   return { outcome, body };
 }
 
-app.get('/api/phrases', requireAuth, (_req, res) => {
-  res.json({ phrases: db.prepare('SELECT id, outcome, body, created_at AS createdAt FROM phrase_templates ORDER BY id').all() });
+app.get('/api/phrases', requireAuth, (req, res) => {
+  res.json({ phrases: db.prepare('SELECT id, outcome, body, created_at AS createdAt FROM phrase_templates WHERE owner_email = ? ORDER BY id').all(req.session.email) });
 });
 
 app.post('/api/phrases', requireAuth, (req, res) => {
   const phrase = parsePhrase(req, res);
   if (!phrase) return;
-  const count = db.prepare('SELECT COUNT(*) AS count FROM phrase_templates').get().count;
+  const count = db.prepare('SELECT COUNT(*) AS count FROM phrase_templates WHERE owner_email = ?').get(req.session.email).count;
   if (count >= 100) return res.status(400).json({ error: 'El banco admite hasta 100 frases.' });
   const createdAt = new Date().toISOString();
-  const result = db.prepare('INSERT INTO phrase_templates (outcome, body, created_at) VALUES (?, ?, ?)').run(phrase.outcome, phrase.body, createdAt);
+  const result = db.prepare('INSERT INTO phrase_templates (outcome, body, created_at, owner_email) VALUES (?, ?, ?, ?)').run(phrase.outcome, phrase.body, createdAt, req.session.email);
   res.status(201).json({ phrase: { id: result.lastInsertRowid, ...phrase, createdAt } });
 });
 
-app.put('/api/phrases/:id', requireAuth, (req, res) => {
-  const phrase = parsePhrase(req, res);
-  if (!phrase) return;
-  const result = db.prepare('UPDATE phrase_templates SET outcome = ?, body = ? WHERE id = ?').run(phrase.outcome, phrase.body, req.params.id);
-  if (!result.changes) return res.status(404).json({ error: 'No encontramos esa frase.' });
-  res.json({ phrase: { id: Number(req.params.id), ...phrase } });
-});
-
 app.delete('/api/phrases/:id', requireAuth, (req, res) => {
-  const result = db.prepare('DELETE FROM phrase_templates WHERE id = ?').run(req.params.id);
+  const result = db.prepare('DELETE FROM phrase_templates WHERE id = ? AND owner_email = ?').run(req.params.id, req.session.email);
   if (!result.changes) return res.status(404).json({ error: 'No encontramos esa frase.' });
   res.json({ ok: true });
 });
 
-app.post('/api/generate', requireAuth, async (req, res, next) => {
-  try {
-    const userPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
-    if (userPrompt.length < 8 || userPrompt.length > 1500) return res.status(400).json({ error: 'Describe la imagen con entre 8 y 1500 caracteres.' });
-
-    const usesTradingReference = /\b(?:xauusd|trading|trade|operaci[oó]n(?:es)?|historial|ganancias?|p[eé]rdidas?)\b/i.test(userPrompt);
-    const gainSlots = [0, 1, 2, 4, 5, 6, 8, 9];
-    const imageCount = db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ?').get(req.session.email).count;
-    const automatic = usesTradingReference ? automaticTradePrompt(gainSlots[imageCount % gainSlots.length], dayKey(), true, nextManualTheme(), req.session.email) : null;
-    if (automatic) {
-      const row = await generateAndStoreTemplate(automatic, req.session.email);
-      return res.status(201).json({ image: imagePayload(row), today: usageToday(req.session.email) });
-    }
-    if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: 'Configura GEMINI_API_KEY en el archivo .env.' });
-    const prompt = automatic ? `${automatic.prompt} Instrucción adicional: ${userPrompt}` : userPrompt;
-    const row = await generateAndStoreImage(prompt, automatic?.referenceIndex ?? null, req.session.email);
-    res.status(201).json({ image: imagePayload(row), today: usageToday(req.session.email) });
-  } catch (err) {
-    if (err?.status || err?.statusCode) {
-      console.error('Gemini generation error:', err.message);
-      return res.status(err.status || err.statusCode).json({ error: 'No se pudo generar la imagen. Revisa tu clave, cuota y configuración de Gemini.' });
-    }
-    next(err);
+app.post('/api/generation-jobs', requireAuth, (req, res) => {
+  const quantity = Number(req.body?.quantity);
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
+    return res.status(400).json({ error: 'Selecciona una cantidad entre 1 y 50.' });
   }
+  const batch = createBatch(req.session.email, quantity, 'manual');
+  wakeBatchProcessor();
+  res.status(202).json({ job: batchPayload(batch) });
 });
 
-function previewRow(token, ownerEmail) {
-  const row = db.prepare('SELECT * FROM template_previews WHERE token = ? AND owner_email = ?').get(token, ownerEmail);
-  return row && Date.now() - Date.parse(row.created_at) < 3600000 ? row : null;
+app.get('/api/generation-jobs', requireAuth, (req, res) => {
+  const rows = db.prepare('SELECT * FROM generation_batches WHERE owner_email = ? ORDER BY created_at DESC LIMIT 30').all(req.session.email);
+  res.json({ jobs: rows.map(batchPayload) });
+});
+
+app.get('/api/generation-jobs/:id', requireAuth, (req, res) => {
+  const row = db.prepare('SELECT * FROM generation_batches WHERE id = ? AND owner_email = ?').get(req.params.id, req.session.email);
+  if (!row) return res.status(404).json({ error: 'No encontramos esa generación.' });
+  res.json({ job: batchPayload(row) });
+});
+
+// The panel only supports the configured batch compositor.
+for (const retiredPath of ['/api/generate', '/api/preview-template', '/api/generate-template', '/api/import-authentic']) {
+  app.all(retiredPath, requireAuth, (_req, res) => res.status(410).json({ error: 'Esta opción ya no está disponible.' }));
 }
-
-function addressMessage(message, preferredAddress, previousAddress = '') {
-  const replacement = preferredAddress.trim();
-  if (!replacement) return message;
-  const escapedPrevious = previousAddress.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const choices = [escapedPrevious, 'jefe', 'líder', 'máster', 'causa', 'parce', 'pana', 'ñaño', 'che', 'compa', 'bro'].filter(Boolean);
-  const vocative = new RegExp(`(?<![\\p{L}\\p{M}])(?:${choices.join('|')})(?![\\p{L}\\p{M}])`, 'iu');
-  if (vocative.test(message)) return message.replace(vocative, replacement);
-  return `${replacement}, ${message.charAt(0).toLowerCase()}${message.slice(1)}`;
-}
-
-app.post('/api/preview-template', requireAuth, async (req, res, next) => {
-  try {
-    const previous = req.body?.previewToken ? previewRow(String(req.body.previewToken), req.session.email) : null;
-    if (req.body?.previewToken && !previous) return res.status(404).json({ error: 'La vista previa caducó. Crea una nueva.' });
-    const outcome = req.body?.outcome === 'loss' ? 'loss' : 'gain';
-    const count = db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ?').get(req.session.email).count;
-    const slots = outcome === 'gain' ? [0, 1, 2, 4, 5, 6, 8, 9] : [3, 7];
-    const automatic = previous ? { scene: JSON.parse(previous.scene_json), prompt: previous.prompt } : automaticTradePrompt(slots[count % slots.length], dayKey(), true, nextManualTheme(), req.session.email);
-    const scene = automatic.scene;
-    const variant = req.body?.layoutVariant === undefined ? scene.layoutVariant : Number(req.body.layoutVariant);
-    if (!Number.isInteger(variant) || variant < 0 || variant > 2) return res.status(400).json({ error: 'Selecciona una escena válida.' });
-    for (const [key, limit] of [['message', 700], ['reply', 350]]) {
-      if (req.body?.[key] !== undefined) {
-        const value = String(req.body[key]).trim();
-        if (!value || value.length > limit) return res.status(400).json({ error: `El texto de ${key} debe tener entre 1 y ${limit} caracteres.` });
-        scene[key] = conversationText(value);
-      }
-    }
-    if (req.body?.preferredAddress !== undefined) {
-      const preferredAddress = String(req.body.preferredAddress).trim();
-      if (preferredAddress.length > 50 || (preferredAddress && !/^[\p{L}\p{M} .'-]+$/u.test(preferredAddress))) {
-        return res.status(400).json({ error: 'Escribe un nombre o tratamiento de hasta 50 caracteres.' });
-      }
-      if (preferredAddress) scene.message = conversationText(addressMessage(scene.message, preferredAddress, scene.preferredAddress));
-      scene.preferredAddress = preferredAddress;
-    }
-    scene.layoutVariant = variant;
-    scene.attachmentCrop = ['full', 'lower-cut', 'full'][variant];
-    scene.messages = [{ role: 'received', text: scene.message }, { role: 'sent', text: scene.reply }];
-    const token = previous?.token || crypto.randomUUID();
-    db.prepare('INSERT OR REPLACE INTO template_previews (token, scene_json, prompt, created_at, owner_email) VALUES (?, ?, ?, ?, ?)')
-      .run(token, JSON.stringify(scene), automatic.prompt, new Date().toISOString(), req.session.email);
-    res.json({ previewToken: token, previewUrl: `/api/preview-template/${token}/file`, layoutVariant: variant, message: scene.message, reply: scene.reply, preferredAddress: scene.preferredAddress || '' });
-  } catch (err) { next(err); }
-});
-
-app.get('/api/preview-template/:token/file', requireAuth, async (req, res, next) => {
-  try {
-    const row = previewRow(req.params.token, req.session.email);
-    if (!row) return res.status(404).json({ error: 'La vista previa caducó.' });
-    res.set('Cache-Control', 'no-store').type('png').send(await renderTelegramChat(JSON.parse(row.scene_json)));
-  } catch (err) { next(err); }
-});
-
-app.post('/api/generate-template', requireAuth, async (req, res, next) => {
-  try {
-    const preview = req.body?.previewToken ? previewRow(String(req.body.previewToken), req.session.email) : null;
-    if (req.body?.previewToken && !preview) return res.status(404).json({ error: 'La vista previa caducó. Crea una nueva.' });
-    if (preview) {
-      const row = await generateAndStoreTemplate({ scene: JSON.parse(preview.scene_json), prompt: preview.prompt }, req.session.email);
-      db.prepare('DELETE FROM template_previews WHERE token = ? AND owner_email = ?').run(preview.token, req.session.email);
-      return res.status(201).json({ image: imagePayload(row), today: usageToday(req.session.email) });
-    }
-    const outcome = req.body?.outcome === 'loss' ? 'loss' : 'gain';
-    const count = db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ?').get(req.session.email).count;
-    const slots = outcome === 'gain' ? [0, 1, 2, 4, 5, 6, 8, 9] : [3, 7];
-    const slot = slots[count % slots.length];
-    const automatic = automaticTradePrompt(slot, dayKey(), true, nextManualTheme(), req.session.email);
-    const row = await generateAndStoreTemplate(automatic, req.session.email);
-    res.status(201).json({ image: imagePayload(row), today: usageToday(req.session.email) });
-  } catch (err) { next(err); }
-});
-
-// Imports a complete original chat screenshot byte-for-byte; no invented text or trade values.
-app.post('/api/import-authentic', requireAuth, express.raw({ type: ['image/png', 'image/jpeg'], limit: '15mb' }), async (req, res, next) => {
-  try {
-    if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: 'Selecciona una captura PNG o JPEG.' });
-    let info;
-    try { info = await sharp(req.body).metadata(); }
-    catch { return res.status(400).json({ error: 'El archivo no es una imagen PNG o JPEG válida.' }); }
-    if (!['png', 'jpeg'].includes(info.format) || info.width < 300 || info.height < 500 || info.width > 4000 || info.height > 8000) {
-      return res.status(400).json({ error: 'La captura debe ser PNG o JPEG vertical, de tamaño válido.' });
-    }
-    const id = crypto.randomUUID();
-    const extension = info.format === 'png' ? 'png' : 'jpg';
-    const filename = `${dayKey()}-original-${id.slice(0, 8)}.${extension}`;
-    const filePath = path.join(IMAGE_DIR, filename);
-    fs.writeFileSync(filePath, req.body, { flag: 'wx' });
-    const createdAt = new Date().toISOString();
-    try {
-      db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type, owner_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, filename, 'Captura original', 'Captura original aportada por el usuario, sin edición.', createdAt, dayKey(new Date(createdAt)), `image/${info.format}`, req.session.email);
-    } catch (error) { fs.rmSync(filePath, { force: true }); throw error; }
-    res.status(201).json({ image: imagePayload(db.prepare('SELECT * FROM images WHERE id = ? AND owner_email = ?').get(id, req.session.email)), today: usageToday(req.session.email) });
-  } catch (error) { next(error); }
-});
 
 app.get('/api/images/:id/file', requireAuth, (req, res) => {
   const row = db.prepare('SELECT * FROM images WHERE id = ? AND owner_email = ?').get(req.params.id, req.session.email);
@@ -869,13 +812,9 @@ app.use((err, _req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Chat Image Studio listo en http://localhost:${PORT}`);
-  if (!process.env.GEMINI_API_KEY) console.warn('GEMINI_API_KEY no está configurada; el login funciona, pero generar está deshabilitado.');
+  console.log(`TESTIMONIOS TELEGRAM listo en http://localhost:${PORT}`);
   if (!hasLoginConfig()) console.warn('Configura ALEXANDER_PASSWORD, JORGE_PASSWORD y SESSION_SECRET antes de iniciar sesión.');
   if (process.env.SESSION_SECRET === 'development-only-change-this-secret') console.warn('SESSION_SECRET tiene el valor de desarrollo; reemplázalo antes de exponer el servidor.');
-  if (process.env.GEMINI_API_KEY && /AIza/.test(process.env.GEMINI_API_KEY)) {
-    console.warn('Verifica en AI Studio que la clave está restringida y es una clave de autorización compatible con las políticas actuales de Gemini API.');
-  }
   const schedulerTimer = setInterval(() => { void runDailyGenerator(); }, 60_000);
   schedulerTimer.unref();
   void runDailyGenerator();
