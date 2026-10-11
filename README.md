@@ -45,15 +45,17 @@ Prepara el archivo de variables y levanta el servicio:
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
-Abre <http://localhost:3000>. `APP_PORT` permite cambiar el puerto publicado. Los volúmenes `studio-data` y `generated-images` conservan la base de datos y la galería entre reconstrucciones. Para publicar detrás de HTTPS, configura `COOKIE_SECURE=true`; en HTTP local debe permanecer en `false`.
+Abre <http://localhost:3000>. `APP_PORT` permite cambiar el puerto publicado por el archivo local. Los volúmenes `studio-data` y `generated-images` conservan la base de datos y la galería entre reconstrucciones. Para publicar detrás de HTTPS, configura `COOKIE_SECURE=true`; en HTTP local debe permanecer en `false`.
+
+En Dokploy usa únicamente `docker-compose.yml`. El servicio expone internamente el puerto `3000` sin reservar un puerto del servidor; configura el dominio de Dokploy para apuntar al puerto interno `3000`.
 
 Para detener el servicio sin eliminar los datos:
 
 ```powershell
-docker compose down
+docker compose -f docker-compose.yml -f docker-compose.local.yml down
 ```
 
 ## Persistencia y seguridad
