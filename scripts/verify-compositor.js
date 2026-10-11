@@ -13,6 +13,24 @@ const cases = [
   { file: '06.png', top: 530, variant: 2, crop: 'full', battery: 97, sticker: 12, name: 'Camila Torres', message: 'Buenas noches, pana. Ya vi las operaciones; gracias por acompañarme a revisar los números.' }
 ];
 
+for (const [index, top] of [1030, 530, 530, 530, 460, 530, 660, 900].entries()) {
+  const file = index === 7 ? path.join(root, 'references', 'trading-history', '08-night.png') : path.join(root, 'references', 'trading-history', 'dark', `${String(index + 1).padStart(2, '0')}.png`);
+  const scene = {
+    theme: 'night', contact: { name: 'Mateo Rojas', emoji: '🤖', color: '#456c93' }, avatarAsset: index,
+    batteryPercent: 22 + index * 9, layoutVariant: index % 3, referencePath: file, referenceTopHeight: top,
+    message: 'Buenas noches, bro. Te comparto cómo cerré hoy. Gracias por ayudarme a revisar las operaciones; seguimos aprendiendo y cuidando el riesgo. 🤖',
+    reply: '¡Duro, mi hermano! Seguimos enfocados y con cabeza fría. 🔥',
+    statusTime: '9:28', chatTime: '9:25 PM', replyTime: '9:28 PM'
+  };
+  const png = await renderTelegramChat(scene);
+  const metadata = await sharp(png).metadata();
+  assert.equal(metadata.width, 900);
+  assert.equal(metadata.height, 1600);
+  const outputPath = path.join(output, `qa-night-${String(index + 1).padStart(2, '0')}.png`);
+  fs.writeFileSync(outputPath, png);
+  process.stdout.write(`${outputPath}\n`);
+}
+
 for (const item of cases) {
   const scene = {
     contact: { name: item.name, emoji: '✦', color: '#659680' },
@@ -50,3 +68,8 @@ assert.equal((await sharp(lossPng).metadata()).height, 1600);
 const lossFile = path.join(output, 'qa-telegram-loss.png');
 fs.writeFileSync(lossFile, lossPng);
 process.stdout.write(`${lossFile}\n`);
+const darkLossPng = await renderTelegramChat({ ...lossScene, theme: 'night', statusTime: '9:18', chatTime: '9:14 PM', replyTime: '9:18 PM' });
+assert.equal((await sharp(darkLossPng).metadata()).height, 1600);
+const darkLossFile = path.join(output, 'qa-night-loss.png');
+fs.writeFileSync(darkLossFile, darkLossPng);
+process.stdout.write(`${darkLossFile}\n`);

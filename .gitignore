@@ -5,3 +5,12 @@ node_modules/
 data/
 generated/
 npm-debug.log*
+assets/profiles/01.jpg
+assets/profiles/02.jpg
+assets/profiles/03.jpg
+assets/profiles/04.jpg
+assets/profiles/illustrated/
+assets/profiles/curated/contact-sheet*.png
+assets/profiles/curated/new-sheets-preview.png
+scripts/crop-curated-profiles.mjs
+scripts/generate-illustrated-profiles.mjs

@@ -39,6 +39,23 @@ npm start
 
 Abre <http://localhost:3000>. Durante desarrollo, `npm run dev` reinicia el servidor al detectar cambios.
 
+## Docker Compose
+
+Prepara el archivo de variables y levanta el servicio:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build
+```
+
+Abre <http://localhost:3000>. `APP_PORT` permite cambiar el puerto publicado. Los volúmenes `studio-data` y `generated-images` conservan la base de datos y la galería entre reconstrucciones. Para publicar detrás de HTTPS, configura `COOKIE_SECURE=true`; en HTTP local debe permanecer en `false`.
+
+Para detener el servicio sin eliminar los datos:
+
+```powershell
+docker compose down
+```
+
 ## Persistencia y seguridad
 
 - `data/studio.sqlite` guarda metadatos y sesiones.
@@ -50,12 +67,12 @@ Abre <http://localhost:3000>. Durante desarrollo, `npm run dev` reinicia el serv
 
 ## Generación automática
 
-La aplicación programa diez composiciones de chat ficticias al día, espaciadas cada 2 h 24 min según `APP_TIMEZONE`. Los trabajos se guardan en SQLite para retomar los pendientes después de un reinicio; cada trabajo puede reintentarse hasta tres veces. Las generaciones manuales siguen disponibles y no sustituyen las automáticas. El botón «Crear con plantilla gratis» abre una vista previa local: permite escoger ganancia o pérdida, una de tres escenas, editar el agradecimiento y la respuesta, y guardar la imagen final en la galería. Las imágenes de trading no consumen la API; las demás escenas pueden usar Gemini.
+La aplicación programa diez composiciones de chat ficticias al día, espaciadas cada 2 h 24 min según `APP_TIMEZONE`. Alterna día y noche por franja: cinco de cada tema. Los trabajos se guardan en SQLite para retomar los pendientes después de un reinicio; cada trabajo puede reintentarse hasta tres veces. Las generaciones manuales siguen disponibles y no sustituyen las automáticas. Su tema alterna con un contador persistente; al editar una vista previa se conserva el tema y el archivo guardado usa exactamente esa escena. El botón «Crear con plantilla gratis» permite escoger ganancia o pérdida, una de tres escenas, editar el agradecimiento y la respuesta, y guardar la imagen final en la galería. Las imágenes de trading no consumen la API; las demás escenas pueden usar Gemini.
 
-Las siete capturas proporcionadas por el usuario están guardadas en [`references/trading-history/`](references/trading-history/README.md). El compositor local conserva sus cifras y proporciones, rota tres encuadres, nombres, perfiles gráficos y frases regionales, y ajusta la altura de las burbujas al texto. Usa la fuente Inter embebida, con su licencia en `assets/fonts/OFL.txt`. Dos de los diez trabajos diarios muestran pérdidas de ejemplo dibujadas localmente. Las solicitudes manuales que mencionan trading, XAUUSD, historial, ganancias o pérdidas abren la misma vista previa local; las demás solicitudes manuales pueden usar Gemini.
+Las ocho capturas proporcionadas por el usuario están guardadas en [`references/trading-history/`](references/trading-history/README.md). Las siete referencias claras tienen versiones oscuras en `references/trading-history/dark/`; se recolorean los píxeles a la misma resolución, sin reconstruir cifras. El tema nocturno rota cinco fondos locales de `assets/wallpapers/`, incluidos los cuatro enlaces aportados; el fondo elegido se guarda en la escena. El compositor local conserva cifras y proporciones, rota tres encuadres, nombres, 100 perfiles ficticios de `assets/profiles/curated/` y frases, y ajusta la altura de las burbujas al texto. La colección combina retratos fotográficos, perfiles anime y algunos paisajes. El perfil seleccionado se guarda en cada escena; la rotación usa recursos coherentes con el nombre del contacto. Las respuestas de ganancia alternan entre texto y un sticker del paquete local cuando cabe sin tapar el resultado. La hora y el saludo corresponden al tema de la escena. Usa la fuente Inter embebida, con su licencia en `assets/fonts/OFL.txt`. Dos de los diez trabajos diarios muestran pérdidas de ejemplo dibujadas localmente. Las solicitudes manuales que mencionan trading, XAUUSD, historial, ganancias o pérdidas abren la misma vista previa local; las demás solicitudes manuales pueden usar Gemini.
 
 ## Banco de frases
 
-El panel permite añadir, editar y eliminar ejemplos de mensajes para ganancias o pérdidas. Se guardan en `data/studio.sqlite` y se rotan entre las siguientes imágenes creadas con plantilla; también se incluyen como guía en los prompts manuales de trading con IA. No se entrena ningún modelo: se usan las frases guardadas como plantillas de texto. Las variables `{{saludo}}`, `{{tratamiento}}`, `{{profit}}` y `{{cierre}}` se sustituyen con la hora, un tratamiento regional, el resultado simulado y el día. Se pueden añadir alternativas como `[[bro|hermano]]` para variar una frase sin gastar API. Así se evitan importes fijos que no coincidan con la captura.
+El panel permite añadir, editar y eliminar ejemplos de mensajes para ganancias o pérdidas. Se guardan en `data/studio.sqlite` y se rotan entre las siguientes imágenes creadas con plantilla. No se entrena ningún modelo: se usan las frases guardadas como plantillas de texto. Las variables `{{saludo}}`, `{{tratamiento}}`, `{{profit}}`, `{{cierre}}` y `{{emoji}}` se sustituyen con la hora, un tratamiento que alterna entre jefe, líder y máster, el resultado de la captura, el día y un emoji contextual. En la vista previa puede indicarse un nombre o tratamiento concreto para el mensaje. Se pueden añadir alternativas como `[[jefe|líder]]` para variar una frase sin gastar API. La rotación se guarda en SQLite y recorre también las seis nuevas guías de [mensajes recibidos](prompts/guias-mensajes.md). Así se evitan importes fijos que no coincidan con la captura.
 
 Las plantillas locales se renderizan con texto y cálculos programados; las generaciones con IA pueden cometer errores de texto o cifras. El panel también permite importar una captura auténtica completa en PNG o JPEG: se guarda exactamente como se recibió, sin editar cifras, texto ni imagen. Revisar cada imagen antes de publicarla.

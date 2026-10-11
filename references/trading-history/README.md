@@ -1,6 +1,6 @@
 # Referencias de historial de trading
 
-Estas siete imágenes fueron proporcionadas por el usuario para servir de **referencia visual** a las imágenes del chat. Se conservan sin cambios en `01.png` a `07.png`.
+Estas ocho imágenes fueron proporcionadas por el usuario para servir de **referencia visual** a las imágenes del chat. Los archivos `01.png` a `07.png` y `08-night.png` se conservan sin cambios.
 
 | Archivo | Rasgo de composición |
 | --- | --- |
@@ -11,5 +11,6 @@ Estas siete imágenes fueron proporcionadas por el usuario para servir de **refe
 | `05.png` | Dos compras; composición breve. |
 | `06.png` | Tres ventas; color rojo en `sell`. |
 | `07.png` | Cuatro compras; composición intermedia. |
+| `08-night.png` | Cuatro compras en tema oscuro. |
 
-El generador rota estas referencias y las envía al modelo como entrada visual. La captura resultante se coloca como **imagen enviada dentro del chat**, seguida de un agradecimiento y una felicitación. En toda variante se exige un rótulo legible de «SIMULACIÓN»; las capturas originales y sus cifras no acreditan resultados propios de los personajes ficticios. El modelo puede cometer errores de texto o aritmética, por lo que cualquier pieza que vaya a publicarse debe revisarse antes.
+`dark/01.png` a `dark/07.png` son conversiones oscuras de los píxeles originales a la misma resolución. Se regeneran con `node scripts/make-dark-references.mjs`. El compositor local inserta la captura como **imagen enviada dentro del chat** y añade el mensaje y la respuesta. La conversación ficticia incluye una indicación de contenido generado; los datos de las capturas de referencia no verifican los resultados del personaje del chat.

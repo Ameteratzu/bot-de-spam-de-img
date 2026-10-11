@@ -235,6 +235,7 @@ async function openTemplatePreview() {
     const data = await api('/api/preview-template', { method: 'POST', body: JSON.stringify({ outcome: $('#template-outcome').value }) });
     previewToken = data.previewToken;
     $('#preview-layout').value = String(data.layoutVariant);
+    $('#preview-address').value = data.preferredAddress || '';
     $('#preview-message').value = data.message;
     $('#preview-reply').value = data.reply;
     $('#preview-image').src = `${data.previewUrl}?v=${Date.now()}`;
@@ -256,7 +257,8 @@ $('#preview-refresh').addEventListener('click', async () => {
   button.disabled = true;
   generateError.textContent = '';
   try {
-    const data = await api('/api/preview-template', { method: 'POST', body: JSON.stringify({ previewToken, layoutVariant: Number($('#preview-layout').value), message: $('#preview-message').value, reply: $('#preview-reply').value }) });
+    const data = await api('/api/preview-template', { method: 'POST', body: JSON.stringify({ previewToken, layoutVariant: Number($('#preview-layout').value), preferredAddress: $('#preview-address').value, message: $('#preview-message').value, reply: $('#preview-reply').value }) });
+    $('#preview-message').value = data.message;
     $('#preview-image').src = `${data.previewUrl}?v=${Date.now()}`;
   } catch (error) { generateError.textContent = error.message; }
   finally { button.disabled = false; }
@@ -268,7 +270,7 @@ $('#preview-save').addEventListener('click', async () => {
   button.disabled = true;
   generateError.textContent = '';
   try {
-    await api('/api/preview-template', { method: 'POST', body: JSON.stringify({ previewToken, layoutVariant: Number($('#preview-layout').value), message: $('#preview-message').value, reply: $('#preview-reply').value }) });
+    await api('/api/preview-template', { method: 'POST', body: JSON.stringify({ previewToken, layoutVariant: Number($('#preview-layout').value), preferredAddress: $('#preview-address').value, message: $('#preview-message').value, reply: $('#preview-reply').value }) });
     const data = await api('/api/generate-template', { method: 'POST', body: JSON.stringify({ previewToken }) });
     previewToken = null;
     $('#template-preview-panel').classList.add('hidden');

@@ -11,11 +11,15 @@ import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { GoogleGenAI } from '@google/genai';
 import sharp from 'sharp';
-import { renderTelegramChat } from './telegram-compositor.js';
+import { renderTelegramChat, conversationText } from './telegram-compositor.js';
+import { themeForAutomaticSlot, themeForManualCursor } from './scene-theme.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const TIME_ZONE = process.env.APP_TIMEZONE || 'America/Lima';
+const COOKIE_SECURE = process.env.COOKIE_SECURE === undefined
+  ? process.env.NODE_ENV === 'production'
+  : process.env.COOKIE_SECURE === 'true';
 const MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-lite-image';
 const AUTOMATIC_RENDER_MODE = 'template';
 const DATA_DIR = path.join(__dirname, 'data');
@@ -80,6 +84,14 @@ const defaultPhrases = [
   ['loss', '{{saludo}}, {{tratamiento}}. Hoy cerré con {{profit}} {{emoji}}. Me toca revisar las entradas; gracias por ayudarme a volver al plan.'],
   ['loss', '{{saludo}}, líder. La sesión terminó en {{profit}} {{emoji}}. Gracias por ayudarme a revisar el riesgo y ver qué puedo mejorar.']
 ];
+const guidancePhrases = [
+  '{{saludo}}, líder. Estoy encantado de trabajar con usted y aprender a usar la herramienta. Al principio tenía mis dudas, pero me animé a probarla y hoy cerré con {{profit}}. Gracias por guiarme {{emoji}}.',
+  '{{saludo}}, {{tratamiento}}. Estoy demasiado emocionado: hoy cerré con {{profit}}. Lo mejor es compartir este proceso con una comunidad que me ayuda a aprender. ¡Vamos por más, líder! {{emoji}}',
+  'Hola, hermano. Comencé con muchas dudas y mira cómo voy avanzando: {{profit}} en esta sesión. Gracias por la herramienta y por estar pendiente; quiero seguir aprendiendo a manejar mejor el riesgo.',
+  'Hermano, estoy emocionado con todo lo que estoy aprendiendo. Compartir este proceso con la comunidad me motiva muchísimo. Cerré con {{profit}}; seguimos enfocados, líder {{emoji}}.',
+  'Líder, tenía que escribirle. Qué bien se siente entender cosas que antes me parecían complicadas. Gracias por la paciencia y por compartir sus conocimientos. Hoy cerré con {{profit}}. ¡Vamos por más! {{emoji}}',
+  'Hermano, me alegra dedicarle tiempo a aprender esto. Hoy cerré con {{profit}} y quería darle las gracias por estar pendiente. Seguimos firmes y aprendiendo {{emoji}}.'
+];
 db.transaction(() => {
   if (db.prepare("SELECT value FROM phrase_library_meta WHERE key = 'defaults_seeded'").get()) return;
   const insert = db.prepare('INSERT INTO phrase_templates (outcome, body, created_at) VALUES (?, ?, ?)');
@@ -100,9 +112,39 @@ const compactPhraseUpgrade = db.prepare('UPDATE phrase_templates SET body = ? WH
   [defaultPhrases[1][1], '{{saludo}}, amigo querido. Muchas bendiciones: otro día más con un resultado positivo de {{profit}} . Estoy emocionado con esta IA, [[¡waooo!|¡qué emoción!]] Gracias por acompañarme.'],
   [defaultPhrases[2][1], '{{saludo}}, [[líder|bro]]. Te comparto las operaciones que dejé corriendo: cerraron con {{profit}} de beneficio. Me emocionó verlo; gracias por ayudarme a tener paciencia.'],
   [defaultPhrases[3][1], '{{saludo}}, {{tratamiento}}. un resultado de {{profit}} me alegró el día. Agradecido contigo por el tiempo y los consejos; eres un gran apoyo.'],
-  [defaultPhrases[4][1], '{{saludo}}, {{tratamiento}}. Hoy el resultado fue {{profit}}. Me frustró un poco, pero gracias por ayudarme a revisar las entradas y volver al plan con la cabeza fría.'],
+  [defaultPhrases[4][1], '{{saludo}}, {{tratamiento}}. Hoy el resultado fue {{profit}}. Me frustró un poco, pero gracias por ayudarme a revisar las entradas y volver al plan con más calma.'],
   [defaultPhrases[5][1], '{{saludo}}, líder. Esta sesión simulada terminó en {{profit}}. Gracias por acompañarme a entender el error; aprendí más revisando el riesgo que mirando solo el resultado.']
 ].forEach(([updated, previous]) => compactPhraseUpgrade.run(updated, previous));
+
+// Add the new guidance once on existing installations. The marker also keeps
+// phrases the user later edits or deletes from being restored at startup.
+db.transaction(() => {
+  const key = 'guidance_phrases_2026_10_10';
+  if (db.prepare('SELECT value FROM phrase_library_meta WHERE key = ?').get(key)) return;
+  const exists = db.prepare('SELECT id FROM phrase_templates WHERE outcome = ? AND body = ?');
+  const insert = db.prepare('INSERT INTO phrase_templates (outcome, body, created_at) VALUES (?, ?, ?)');
+  const now = new Date().toISOString();
+  for (const body of guidancePhrases) {
+    if (!exists.get('gain', body)) insert.run('gain', body, now);
+  }
+  db.prepare('INSERT INTO phrase_library_meta (key, value) VALUES (?, ?)').run(key, '1');
+})();
+
+function nextPhraseIndex(loss, advance = true) {
+  return db.transaction(() => {
+    const outcome = loss ? 'loss' : 'gain';
+    const key = `phrase_cursor_${outcome}`;
+    const saved = db.prepare('SELECT value FROM phrase_library_meta WHERE key = ?').get(key);
+    const count = db.prepare('SELECT COUNT(*) AS count FROM phrase_templates WHERE outcome = ?').get(outcome).count;
+    const start = loss ? 0 : Math.max(0, count - guidancePhrases.length);
+    const index = saved ? Number.parseInt(saved.value, 10) || 0 : start;
+    if (advance) {
+      db.prepare('INSERT INTO phrase_library_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+        .run(key, String(index + 1));
+    }
+    return index;
+  })();
+}
 [
   [defaultPhrases[0][1], '{{saludo}}, {{tratamiento}}. Cerré el día en positivo con {{profit}}. Gracias por tus consejos; me ayudaron a seguir el plan {{emoji}}.'],
   [defaultPhrases[1][1], 'Amigo querido, muchas bendiciones. Hoy terminé con {{profit}} y estoy contento con el avance de la IA {{emoji}}. Gracias por acompañarme.'],
@@ -184,7 +226,7 @@ app.use(session({
   cookie: {
     httpOnly: true,
     sameSite: 'strict',
-    secure: process.env.NODE_ENV === 'production',
+    secure: COOKIE_SECURE,
     maxAge: 1000 * 60 * 60 * 24 * 7
   }
 }));
@@ -202,13 +244,15 @@ const tradeReferences = [
   { file: '04.png', rows: 3, side: 'buy', topHeight: 530, profitCents: 63264, swapCents: -1512 },
   { file: '05.png', rows: 2, side: 'buy', topHeight: 460, profitCents: 23912, swapCents: -882 },
   { file: '06.png', rows: 3, side: 'sell', topHeight: 530, profitCents: 52782, swapCents: -395 },
-  { file: '07.png', rows: 4, side: 'buy', topHeight: 660, profitCents: 27352, swapCents: -2824 }
+  { file: '07.png', rows: 4, side: 'buy', topHeight: 660, profitCents: 27352, swapCents: -2824 },
+  { file: '08-night.png', rows: 4, side: 'buy', topHeight: 900, profitCents: 31971, swapCents: -304 }
 ];
 const chatContacts = [
   'Mateo Rojas', 'Camila Torres', 'Andrés Mejía', 'Sofía Paredes', 'Daniel Vargas',
   'Lucía Herrera', 'Nicolás Muñoz', 'Valentina Cruz', 'Joaquín Salazar', 'Mariana Soto',
   'Gabriel Molina', 'Renata Castillo', 'Emilio Núñez', 'Isabella Reyes'
 ];
+const femaleContactNames = new Set(['Camila', 'Sofía', 'Lucía', 'Valentina', 'Mariana', 'Renata', 'Isabella']);
 const connectionStatuses = [
   'en línea',
   'últ. vez hace 3 minutos',
@@ -229,7 +273,7 @@ const replyEmojis = {
 const avatarColors = ['#456c93', '#8062a8', '#ad725e', '#4c8279', '#ac6e89', '#546d9d', '#9d7c49', '#6b8198', '#8974ad', '#63855d'];
 const composeSequence = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
 const regionalStyles = [
-  { label: 'Perú 🇵🇪', slang: 'causa', reply: '¡Qué alegría, causa! Felicitaciones por seguir el plan; sigamos con cabeza fría.' },
+  { label: 'Perú 🇵🇪', slang: 'causa', reply: '¡Qué alegría, líder! Felicitaciones por seguir el plan; sigamos con constancia.' },
   { label: 'México 🇲🇽', slang: 'qué onda', reply: '¡Eso, bro! Felicidades por la disciplina; vamos paso a paso y cuidando el riesgo.' },
   { label: 'Colombia 🇨🇴', slang: 'parce', reply: '¡Eso, parce! Qué gusto ver tu disciplina. Felicitaciones, seguimos firmes.' },
   { label: 'Argentina 🇦🇷', slang: 'che', reply: '¡Bien ahí, che! Felicitaciones por sostener el plan. Seguimos atentos al riesgo.' },
@@ -239,16 +283,47 @@ const regionalStyles = [
 ];
 const dominicanReplies = {
   gain: [
-    '¡Duro, mi hermano! Me alegra que siguieras el plan. Vamos arriba, cuidando el riesgo.',
-    '¡Qué apero, mi loco! Felicidades por la disciplina; seguimos paso a paso y con calma.',
-    '¡Nítido, bro! Buen trabajo manteniendo la cabeza fría. Seguimos enfocados en el plan.',
-    '¡Eso es, mi hermano! Me alegra ver esa constancia; ahora toca cuidar el riesgo y seguir aprendiendo.'
+    '¡Duro, mi hermano! Me alegra que siguieras el plan. Vamos arriba, paso a paso.',
+    '¡Qué duro, mi bro! Felicidades por la disciplina; seguimos paso a paso con calma.',
+    '¡Nítido, bro! Buen trabajo manteniendo la disciplina. Seguimos enfocados en el plan.',
+    '¡Eso es, mi hermano! Me alegra ver esa constancia; seguimos aprendiendo y celebrando cada avance.'
   ],
   loss: [
-    'Tranquilo, mi hermano. Revisamos las entradas con calma y seguimos cuidando el riesgo.',
+    'Tranquilo, mi hermano. Revisamos las entradas con calma y seguimos aprendiendo.',
     'No te me desanimes, bro. Analizamos qué pasó y volvemos al plan sin desesperarnos.',
-    'Dale suave, mi hermano. Una sesión no define el proceso; revisamos el riesgo y aprendemos.',
+    'Dale suave, mi hermano. Una sesión no define el proceso; repasamos lo ocurrido y aprendemos.',
     'Está bien, mi loco. Revisamos la operación con calma y seguimos aprendiendo sin salirnos del plan.'
+  ]
+};
+const femaleConversationPhrases = {
+  gain: [
+    '{{saludo}}, líder. Quería compartirle este resultado porque me hizo muchísima ilusión. Hoy cerré con {{profit}} y cada día me siento más segura usando la herramienta. Gracias por explicarme todo con tanta paciencia {{emoji}}.',
+    '{{saludo}}, mentor. Estoy muy contenta con el avance de hoy: {{profit}}. Al principio tenía muchas dudas, pero poco a poco voy entendiendo mejor el proceso. Gracias por estar pendiente {{emoji}}.',
+    'Líder, tenía que escribirle para contarle lo emocionada que estoy. Cerré con {{profit}} y siento que todo lo que he venido aprendiendo empieza a dar frutos. De verdad, gracias por acompañarme {{emoji}}.',
+    'Hola, líder. Hoy terminé la sesión con {{profit}} y no podía dejar de compartirlo con usted. Me alegra ver que la constancia está dando resultados; sigo aprendiendo muchísimo {{emoji}}.',
+    '{{saludo}}, mentor. Estoy feliz con el resultado de hoy: {{profit}}. Más allá del número, me emociona sentir que ya comprendo mejor cada paso. Gracias por su dedicación {{emoji}}.',
+    'Líder, qué alegría poder mostrarle este avance. Cerré con {{profit}} y me siento muy agradecida por todo lo que he aprendido dentro de la comunidad. Seguimos adelante {{emoji}}.',
+    '{{saludo}}, líder. Le comparto mis operaciones de hoy porque terminé muy contenta con el resultado: {{profit}}. Gracias por la paciencia y por ayudarme a confiar más en el proceso {{emoji}}.',
+    'Hola, mentor. Estoy sorprendida y muy emocionada con lo que conseguí hoy: {{profit}}. Cada explicación me ayuda a sentirme más preparada. Gracias por acompañarme en este camino {{emoji}}.'
+  ],
+  loss: [
+    '{{saludo}}, líder. Hoy la sesión terminó en {{profit}}. Me quedé un poco pensativa, pero quería compartirlo con usted para entender qué puedo mejorar. Gracias por seguir pendiente {{emoji}}.',
+    'Hola, mentor. El resultado de hoy fue {{profit}}. Aunque no era lo que esperaba, agradezco poder revisarlo y aprender de la experiencia. Gracias por su paciencia {{emoji}}.',
+    'Líder, quería contarle cómo me fue hoy. Cerré con {{profit}} y me gustaría entender mejor qué ocurrió. Sé que cada sesión también forma parte del aprendizaje {{emoji}}.',
+    '{{saludo}}, líder. Hoy terminé con {{profit}}. Me dio un poco de tristeza al verlo, pero prefiero tomarlo como una oportunidad para seguir aprendiendo. Gracias por orientarme {{emoji}}.'
+  ]
+};
+const femaleMentorReplies = {
+  gain: [
+    'Me alegra muchísimo leer eso, {{nombre}}. Has sido muy constante y ese avance se nota. ¡Vamos por más! {{emoji}}',
+    'Excelente trabajo, {{nombre}}. Qué bonito ver cómo has ido ganando confianza con cada sesión. Seguimos avanzando {{emoji}}',
+    'Felicidades, {{nombre}}. Tu dedicación está dando resultados y me alegra acompañarte en este proceso. Seguimos firmes {{emoji}}',
+    'Muy bien, {{nombre}}. Se nota todo el empeño que le estás poniendo. Disfruta este avance y continuamos creciendo {{emoji}}'
+  ],
+  loss: [
+    'Gracias por compartirlo, {{nombre}}. Vamos a revisar la sesión con tranquilidad y sacar de ella un buen aprendizaje {{emoji}}',
+    'Tranquila, {{nombre}}. Valoro que quieras comprender lo ocurrido; lo revisamos con detalle y seguimos avanzando {{emoji}}',
+    'Ánimo, {{nombre}}. Cada sesión nos deja algo para aprender. La revisamos con paciencia y continuamos {{emoji}}'
   ]
 };
 const pick = (items) => items[crypto.randomInt(items.length)];
@@ -262,30 +337,35 @@ function clockTime(minute, includeMeridiem = false) {
   return includeMeridiem ? `${time} ${hour < 12 ? 'AM' : 'PM'}` : time;
 }
 
-function phraseForScene(loss, region, summary, variantIndex, contactIndex = 0) {
+function phraseForScene(loss, region, summary, variantIndex, contactIndex = 0, theme = 'day', avatarGender = 'male') {
   const outcome = loss ? 'loss' : 'gain';
   const emoji = contextEmojis[outcome][contactIndex % contextEmojis[outcome].length];
   const options = db.prepare('SELECT id, body FROM phrase_templates WHERE outcome = ? ORDER BY id').all(outcome);
   const fallback = loss ? defaultPhrases[4][1] : defaultPhrases[0][1];
-  const selected = options.length ? options[variantIndex % options.length].body : fallback;
+  const genderOptions = femaleConversationPhrases[outcome];
+  const selected = avatarGender === 'female'
+    ? genderOptions[variantIndex % genderOptions.length]
+    : options.length ? options[variantIndex % options.length].body : fallback;
+  const optionCount = avatarGender === 'female' ? genderOptions.length : Math.max(options.length, 1);
   const varied = selected.replace(/\[\[([^\[\]]+)\]\]/g, (_match, choices) => {
     const variants = choices.split('|').map((choice) => choice.trim()).filter(Boolean);
-    return variants.length ? variants[Math.floor(variantIndex / Math.max(options.length, 1)) % variants.length] : '';
+    return variants.length ? variants[Math.floor(variantIndex / optionCount) % variants.length] : '';
   });
-  const minute = localMinuteOfDay();
+  const minute = theme === 'night' ? 19 * 60 + (variantIndex * 37 + contactIndex * 13) % 270 : 8 * 60 + (variantIndex * 43 + contactIndex * 17) % 570;
   const hour = Math.floor(minute / 60);
   const saludo = hour >= 5 && hour < 12 ? 'Buenos días' : hour >= 12 && hour < 19 ? 'Buenas tardes' : 'Buenas noches';
   const weekday = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, weekday: 'short' }).format(new Date());
   const cierre = ['Fri', 'Sat'].includes(weekday) ? 'Cierro la semana' : 'Cierro el día';
-  const vocatives = { Perú: 'causa', México: 'bro', Colombia: 'parce', Argentina: 'che', Chile: 'compa', Ecuador: 'ñaño', Venezuela: 'pana' };
-  const tratamiento = vocatives[region.label.split(' ')[0]] || 'bro';
+  const tratamiento = avatarGender === 'female'
+    ? ['líder', 'mentor'][(variantIndex + contactIndex) % 2]
+    : ['jefe', 'líder', 'máster'][(variantIndex + contactIndex) % 3];
   const message = varied.replace(/{{(saludo|tratamiento|profit|cierre|emoji)}}/g, (_match, key) => ({
     saludo, tratamiento, profit: `${summary.profitText} USD`, cierre, emoji
-  })[key]).replace(/🤖/g, emoji).replace(/\ben esta simulación\b/gi, '').replace(/\bsimulad[oa]s?\b/gi, '').replace(/\s+([,.;:!?])/g, '$1').replace(/\s{2,}/g, ' ').trim();
-  return { message, emoji, chatTime: clockTime(minute - 2, true), replyTime: clockTime(minute, true), statusTime: clockTime(minute) };
+  })[key]).replace(/^Buenos (?:días|tardes|noches)\b/i, saludo).replace(/(?<![\p{L}\p{M}])(?:causa|parce|pana|ñaño|che|compa|bro|mi loco)(?![\p{L}\p{M}])/giu, tratamiento).replace(/🤖/g, emoji).replace(/\ben esta simulación\b/gi, '').replace(/\bsimulad[oa]s?\b/gi, '').replace(/\s+([,.;:!?])/g, '$1').replace(/\s{2,}/g, ' ').trim();
+  return { message: conversationText(message), emoji, chatTime: clockTime(minute - 2, true), replyTime: clockTime(minute, true), statusTime: clockTime(minute) };
 }
 
-function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIndex = 0, layoutIndex = 0) {
+function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIndex = 0, layoutIndex = 0, theme = 'day') {
   const lot = crypto.randomInt(4, 9);
   const entry = crypto.randomInt(410000, 424000);
   const date = dayKey().replaceAll('-', '.');
@@ -296,24 +376,32 @@ function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIn
     const close = entry + direction * diff + crypto.randomInt(-60, 61);
     const amount = (reference.side === 'buy' ? close - entry : entry - close) * lot;
     profit += amount;
-    return { side: reference.side, lot, entryText: money(entry), closeText: money(close), amount, amountText: money(amount), time: `09:${String(20 + index).padStart(2, '0')}:00` };
+    return { side: reference.side, lot, entryText: money(entry), closeText: money(close), amount, amountText: money(amount), time: `${theme === 'night' ? '21' : '10'}:${String(20 + index).padStart(2, '0')}:00` };
   });
   if (!loss) profit = reference.profitCents;
   const swap = loss ? 0 : reference.swapCents;
   const deposit = loss ? Math.max(50000, Math.abs(profit + swap) + 20000) : 0;
   const summary = { depositText: money(deposit), profitText: money(profit), swapText: money(swap), balanceText: money(deposit + profit + swap) };
-  const { message, emoji, chatTime, replyTime, statusTime } = phraseForScene(loss, region, summary, variantIndex, contactIndex);
-  const batteryPercent = crypto.randomInt(10, 101);
-  const stickerAsset = contactIndex;
   const contact = {
     name: chatContacts[contactIndex % chatContacts.length],
-    emoji: emoji || chatEmojis[contactIndex % chatEmojis.length],
+    emoji: chatEmojis[contactIndex % chatEmojis.length],
     color: avatarColors[contactIndex % avatarColors.length]
   };
+  const avatarGender = femaleContactNames.has(contact.name.split(' ')[0]) ? 'female' : 'male';
+  const { message, emoji, chatTime, replyTime, statusTime } = phraseForScene(loss, region, summary, variantIndex, contactIndex, theme, avatarGender);
+  contact.emoji = emoji || contact.emoji;
+  const batteryPercent = crypto.randomInt(10, 101);
+  const stickerAsset = contactIndex;
   const replyOutcome = loss ? 'loss' : 'gain';
-  const baseReply = dominicanReplies[replyOutcome][(contactIndex + variantIndex) % dominicanReplies[replyOutcome].length];
+  const replyPool = avatarGender === 'female' ? femaleMentorReplies[replyOutcome] : dominicanReplies[replyOutcome];
+  const baseReply = replyPool[(contactIndex + variantIndex) % replyPool.length];
   const replyEmoji = replyEmojis[loss ? 'loss' : 'gain'][contactIndex % replyEmojis[loss ? 'loss' : 'gain'].length];
-  const reply = baseReply.replace(/([.!?])(?=\s|$)/, `$1 ${replyEmoji}`);
+  const personalizedReply = baseReply
+    .replaceAll('{{nombre}}', contact.name.split(' ')[0])
+    .replaceAll('{{emoji}}', replyEmoji);
+  const reply = conversationText(baseReply.includes('{{emoji}}')
+    ? personalizedReply
+    : personalizedReply.replace(/([.!?])(?=\s|$)/, `$1 ${replyEmoji}`));
   const rowsText = loss ? sceneRows.map((row, index) => `Fila ${index + 1}: XAUUSD ${row.side} 0.0${row.lot}; ${row.entryText} → ${row.closeText}; resultado ${row.amountText}; ${date} ${row.time}.`).join(' ') : `Conserva la captura de referencia ${reference.file} con sus importes originales; recorta únicamente espacio blanco central para mostrarla dentro del chat sin deformarla.`;
   const layoutVariant = layoutIndex % 3;
   const attachmentCrop = ['full', 'lower-cut', 'viewport'][layoutVariant];
@@ -329,24 +417,36 @@ function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIn
     scene: {
       region, contact, connectionStatus: connectionStatuses[contactIndex % connectionStatuses.length], rows: sceneRows, summary, message, reply,
       messages: [{ role: 'received', text: message }, { role: 'sent', text: reply }],
-      loss, date, chatTime, replyTime, statusTime, batteryPercent, stickerAsset,
-      layoutVariant, attachmentCrop, avatarAsset: (contactIndex * 5 + 3) % 6,
-      referencePath: loss ? null : path.join(REFERENCE_DIR, reference.file),
-      referenceTopHeight: reference.topHeight
+      loss, date, chatTime, replyTime, statusTime, batteryPercent, stickerAsset, theme,
+      showSticker: !loss && contactIndex % 2 === 0,
+      wallpaperAsset: theme === 'night' ? contactIndex % 5 : 0,
+      layoutVariant, attachmentCrop, avatarGender, avatarAsset: contactIndex % 50,
+      referencePath: loss ? null : path.join(REFERENCE_DIR, theme === 'night' && reference.file !== '08-night.png' ? path.join('dark', reference.file) : reference.file),
+      referenceTopHeight: reference.topHeight,
+      referenceTopOffset: reference.file === '08-night.png' ? 100 : 0
     }
   };
 }
 
-function automaticTradePrompt(slot, today) {
-  const offset = ([...today].reduce((total, char) => total + char.charCodeAt(0), 0) + composeSequence) % tradeReferences.length;
-  const referenceIndex = (offset + slot) % tradeReferences.length;
+function automaticTradePrompt(slot, today, advancePhrase = true, themeOverride = null) {
+  const theme = themeOverride || themeForAutomaticSlot(slot);
+  const pool = theme === 'night' ? tradeReferences.length : tradeReferences.length - 1;
+  const offset = ([...today].reduce((total, char) => total + char.charCodeAt(0), 0) + composeSequence) % pool;
+  const referenceIndex = (offset + slot) % pool;
   const regionIndex = (offset + slot) % regionalStyles.length;
   const loss = slot === 3 || slot === 7;
-  const phraseIndex = loss ? (slot === 7 ? 1 : 0) : slot - Number(slot > 3) - Number(slot > 7);
+  const phraseIndex = nextPhraseIndex(loss, advancePhrase);
   const contactIndex = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
   const layoutIndex = contactIndex + [...today].reduce((total, char) => total + char.charCodeAt(0), 0);
-  return { referenceIndex, ...tradeBrief(tradeReferences[referenceIndex], regionalStyles[regionIndex], loss, phraseIndex, contactIndex, layoutIndex) };
+  return { referenceIndex, ...tradeBrief(tradeReferences[referenceIndex], regionalStyles[regionIndex], loss, phraseIndex, contactIndex, layoutIndex, theme) };
 }
+
+const nextManualTheme = db.transaction(() => {
+  const key = 'manual_theme_cursor';
+  const cursor = Number(db.prepare('SELECT value FROM phrase_library_meta WHERE key = ?').get(key)?.value || 0);
+  db.prepare('INSERT INTO phrase_library_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, String(cursor + 1));
+  return themeForManualCursor(cursor);
+});
 
 function dayKey(date = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {
@@ -500,7 +600,7 @@ async function runDailyGenerator() {
     const latestDueSlot = Math.min(9, Math.floor(currentMinute / 144));
     const insertDueJobs = db.transaction(() => {
       for (let slot = 0; slot <= latestDueSlot; slot++) {
-        jobInsert.run(today, slot, automaticTradePrompt(slot, today).prompt, new Date().toISOString());
+        jobInsert.run(today, slot, automaticTradePrompt(slot, today, false).prompt, new Date().toISOString());
       }
     });
     insertDueJobs();
@@ -542,8 +642,8 @@ function parsePhrase(req, res) {
     return null;
   }
   const placeholders = body.match(/{{[^}]+}}/g) || [];
-  if (placeholders.some((item) => !['{{saludo}}', '{{tratamiento}}', '{{profit}}', '{{cierre}}'].includes(item))) {
-    res.status(400).json({ error: 'Usa solo {{saludo}}, {{tratamiento}}, {{profit}} y {{cierre}}.' });
+  if (placeholders.some((item) => !['{{saludo}}', '{{tratamiento}}', '{{profit}}', '{{cierre}}', '{{emoji}}'].includes(item))) {
+    res.status(400).json({ error: 'Usa solo {{saludo}}, {{tratamiento}}, {{profit}}, {{cierre}} y {{emoji}}.' });
     return null;
   }
   const withoutVariants = body.replace(/\[\[([^\[\]]+)\]\]/g, (_match, choices) => choices.split('|').length >= 2 ? '' : '__invalid__');
@@ -589,7 +689,7 @@ app.post('/api/generate', requireAuth, async (req, res, next) => {
 
     const usesTradingReference = /\b(?:xauusd|trading|trade|operaci[oó]n(?:es)?|historial|ganancias?|p[eé]rdidas?)\b/i.test(userPrompt);
     const gainSlots = [0, 1, 2, 4, 5, 6, 8, 9];
-    const automatic = usesTradingReference ? automaticTradePrompt(gainSlots[db.prepare('SELECT COUNT(*) AS count FROM images').get().count % gainSlots.length], dayKey()) : null;
+    const automatic = usesTradingReference ? automaticTradePrompt(gainSlots[db.prepare('SELECT COUNT(*) AS count FROM images').get().count % gainSlots.length], dayKey(), true, nextManualTheme()) : null;
     if (automatic) {
       const row = await generateAndStoreTemplate(automatic);
       return res.status(201).json({ image: imagePayload(row), today: usageToday() });
@@ -612,6 +712,16 @@ function previewRow(token) {
   return row && Date.now() - Date.parse(row.created_at) < 3600000 ? row : null;
 }
 
+function addressMessage(message, preferredAddress, previousAddress = '') {
+  const replacement = preferredAddress.trim();
+  if (!replacement) return message;
+  const escapedPrevious = previousAddress.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const choices = [escapedPrevious, 'jefe', 'líder', 'máster', 'causa', 'parce', 'pana', 'ñaño', 'che', 'compa', 'bro'].filter(Boolean);
+  const vocative = new RegExp(`(?<![\\p{L}\\p{M}])(?:${choices.join('|')})(?![\\p{L}\\p{M}])`, 'iu');
+  if (vocative.test(message)) return message.replace(vocative, replacement);
+  return `${replacement}, ${message.charAt(0).toLowerCase()}${message.slice(1)}`;
+}
+
 app.post('/api/preview-template', requireAuth, async (req, res, next) => {
   try {
     const previous = req.body?.previewToken ? previewRow(String(req.body.previewToken)) : null;
@@ -619,7 +729,7 @@ app.post('/api/preview-template', requireAuth, async (req, res, next) => {
     const outcome = req.body?.outcome === 'loss' ? 'loss' : 'gain';
     const count = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
     const slots = outcome === 'gain' ? [0, 1, 2, 4, 5, 6, 8, 9] : [3, 7];
-    const automatic = previous ? { scene: JSON.parse(previous.scene_json), prompt: previous.prompt } : automaticTradePrompt(slots[count % slots.length], dayKey());
+    const automatic = previous ? { scene: JSON.parse(previous.scene_json), prompt: previous.prompt } : automaticTradePrompt(slots[count % slots.length], dayKey(), true, nextManualTheme());
     const scene = automatic.scene;
     const variant = req.body?.layoutVariant === undefined ? scene.layoutVariant : Number(req.body.layoutVariant);
     if (!Number.isInteger(variant) || variant < 0 || variant > 2) return res.status(400).json({ error: 'Selecciona una escena válida.' });
@@ -627,8 +737,16 @@ app.post('/api/preview-template', requireAuth, async (req, res, next) => {
       if (req.body?.[key] !== undefined) {
         const value = String(req.body[key]).trim();
         if (!value || value.length > limit) return res.status(400).json({ error: `El texto de ${key} debe tener entre 1 y ${limit} caracteres.` });
-        scene[key] = value;
+        scene[key] = conversationText(value);
       }
+    }
+    if (req.body?.preferredAddress !== undefined) {
+      const preferredAddress = String(req.body.preferredAddress).trim();
+      if (preferredAddress.length > 50 || (preferredAddress && !/^[\p{L}\p{M} .'-]+$/u.test(preferredAddress))) {
+        return res.status(400).json({ error: 'Escribe un nombre o tratamiento de hasta 50 caracteres.' });
+      }
+      if (preferredAddress) scene.message = conversationText(addressMessage(scene.message, preferredAddress, scene.preferredAddress));
+      scene.preferredAddress = preferredAddress;
     }
     scene.layoutVariant = variant;
     scene.attachmentCrop = ['full', 'lower-cut', 'full'][variant];
@@ -636,7 +754,7 @@ app.post('/api/preview-template', requireAuth, async (req, res, next) => {
     const token = previous?.token || crypto.randomUUID();
     db.prepare('INSERT OR REPLACE INTO template_previews (token, scene_json, prompt, created_at) VALUES (?, ?, ?, ?)')
       .run(token, JSON.stringify(scene), automatic.prompt, new Date().toISOString());
-    res.json({ previewToken: token, previewUrl: `/api/preview-template/${token}/file`, layoutVariant: variant, message: scene.message, reply: scene.reply });
+    res.json({ previewToken: token, previewUrl: `/api/preview-template/${token}/file`, layoutVariant: variant, message: scene.message, reply: scene.reply, preferredAddress: scene.preferredAddress || '' });
   } catch (err) { next(err); }
 });
 
@@ -661,7 +779,7 @@ app.post('/api/generate-template', requireAuth, async (req, res, next) => {
     const count = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
     const slots = outcome === 'gain' ? [0, 1, 2, 4, 5, 6, 8, 9] : [3, 7];
     const slot = slots[count % slots.length];
-    const automatic = automaticTradePrompt(slot, dayKey());
+    const automatic = automaticTradePrompt(slot, dayKey(), true, nextManualTheme());
     const row = await generateAndStoreTemplate(automatic);
     res.status(201).json({ image: imagePayload(row), today: usageToday() });
   } catch (err) { next(err); }

@@ -1,0 +1,28 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bot-de-imagenes:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - studio-data:/app/data
+      - generated-images:/app/generated
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/config').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  studio-data:
+  generated-images:

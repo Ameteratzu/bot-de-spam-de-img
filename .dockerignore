@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+node_modules
+npm-debug.log*
+data
+generated
+assets/profiles/illustrated
+assets/profiles/curated/contact-sheet*.png
+assets/profiles/curated/new-sheets-preview.png
+assets/profiles/01.jpg
+assets/profiles/02.jpg
+assets/profiles/03.jpg
+assets/profiles/04.jpg
+scripts/generate-illustrated-profiles.mjs
