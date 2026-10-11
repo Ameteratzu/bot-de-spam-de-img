@@ -38,7 +38,11 @@ function updateSelectionUI(){
   const count=selectedIds.size;
   $('#selection-count').textContent=`${count} ${count===1?'seleccionada':'seleccionadas'}`;
   $('#delete-selected').disabled=count===0;
-  document.querySelectorAll('.image-card').forEach(card=>card.classList.toggle('selected',selectedIds.has(card.dataset.imageId)));
+  document.querySelectorAll('.image-card').forEach(card=>{
+    const selected=selectedIds.has(card.dataset.imageId);
+    card.classList.toggle('selected',selected);
+    card.querySelector('.selection-check')?.setAttribute('aria-checked',String(selected));
+  });
 }
 function setSelectionMode(enabled){
   selectionMode=enabled; document.body.classList.toggle('selection-mode',enabled); $('#selection-bar').classList.toggle('hidden',!enabled); $('#select-button').textContent=enabled?'Seleccionando':'Seleccionar';
@@ -66,6 +70,10 @@ function renderGallery(data){
       card.querySelector('strong').textContent=image.name; card.querySelector('.image-card-footer span').textContent=formatTime(image.createdAt);
       card.querySelector('.download').href=image.downloadUrl;
       card.querySelector('.image-open').addEventListener('click',()=>selectionMode?toggleSelected(image.id):openViewer(image));
+      card.querySelector('.selection-check').addEventListener('click',()=>{
+        if(!selectionMode)setSelectionMode(true);
+        toggleSelected(image.id);
+      });
       card.classList.toggle('selected',selectedIds.has(image.id));
       grid.append(card);
     }
