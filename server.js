@@ -371,7 +371,6 @@ const connectionStatuses = [
   'últ. vez hace 1 hora',
   'últ. vez recientemente'
 ];
-const chatEmojis = ['🤖', '🤩', '🤑', '🥳', '🤪', '🤯', '🤓', '😳', '🥸'];
 const contextEmojis = {
   gain: ['🤩', '🤑', '🥳', '🤪', '🤯', '🤓', '🤖'],
   loss: ['😳', '🤓', '🥸', '🤖', '🤯', '😠']
@@ -381,6 +380,17 @@ const replyEmojis = {
   loss: ['🧠', '💡', '📝', '🙏']
 };
 const avatarColors = ['#456c93', '#8062a8', '#ad725e', '#4c8279', '#ac6e89', '#546d9d', '#9d7c49', '#6b8198', '#8974ad', '#63855d'];
+// Contact names are shown without decorative face emojis. Clean records from
+// earlier versions as well so the gallery and newly generated chats agree.
+const contactEmojiPattern = /[🤖🤩🤑🥳🤪🤯🤓😳🥸😠]/gu;
+const savedContactNames = db.prepare('SELECT id, display_name FROM images').all();
+const updateContactName = db.prepare('UPDATE images SET display_name = ? WHERE id = ?');
+db.transaction(() => {
+  for (const row of savedContactNames) {
+    const cleanName = row.display_name.replace(contactEmojiPattern, '').replace(/\s{2,}/g, ' ').trim();
+    if (cleanName !== row.display_name) updateContactName.run(cleanName, row.id);
+  }
+})();
 const composeSequence = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
 const regionalStyles = [
   { label: 'Perú 🇵🇪', slang: 'causa', reply: '¡Qué alegría, líder! Felicitaciones por seguir el plan; sigamos con constancia.' },
@@ -496,12 +506,11 @@ function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIn
   const baseContactName = identity.baseName;
   const contact = {
     name: contactNameFormats[contactIndex % contactNameFormats.length](baseContactName),
-    emoji: chatEmojis[contactIndex % chatEmojis.length],
+    emoji: '',
     color: avatarColors[contactIndex % avatarColors.length]
   };
   const avatarGender = identity.gender;
   const { message, emoji, chatTime, replyTime, statusTime } = phraseForScene(loss, region, summary, variantIndex, contactIndex, theme, avatarGender, ownerEmail);
-  contact.emoji = emoji || contact.emoji;
   const batteryPercent = crypto.randomInt(10, 101);
   const stickerAsset = contactIndex;
   const replyOutcome = loss ? 'loss' : 'gain';

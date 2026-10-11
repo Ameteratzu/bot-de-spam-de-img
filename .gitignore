@@ -1,6 +1,4 @@
 node_modules/
-.env
-.env.*
 !.env.example
 data/
 generated/
@@ -14,3 +12,4 @@ assets/profiles/curated/contact-sheet*.png
 assets/profiles/curated/new-sheets-preview.png
 scripts/crop-curated-profiles.mjs
 scripts/generate-illustrated-profiles.mjs
+config.bat
