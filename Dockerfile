@@ -1,10 +1,13 @@
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends dumb-init \
+  && apt-get install -y --no-install-recommends dumb-init fontconfig \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+COPY assets/fonts/Inter.ttf /usr/local/share/fonts/truetype/inter/Inter.ttf
+RUN fc-cache -f
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev

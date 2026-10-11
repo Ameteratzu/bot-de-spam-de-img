@@ -10,6 +10,9 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const FONT_PATH = path.join(ROOT, 'assets', 'fonts', 'Inter.ttf');
 const FONT = fontkit.openSync(FONT_PATH);
 const FONT_DATA = fs.readFileSync(FONT_PATH).toString('base64');
+const FONT_STYLE = process.platform === 'linux'
+  ? `text{font-family:Inter,'DejaVu Sans',sans-serif}`
+  : `@font-face{font-family:ChatInter;src:url(data:font/ttf;base64,${FONT_DATA}) format('truetype')}text{font-family:ChatInter,Arial,sans-serif}`;
 const WALLPAPER_PATH = path.join(ROOT, 'assets', 'wallpapers', 'chat-green-doodle.jpg');
 const WALLPAPER_DATA = fs.readFileSync(WALLPAPER_PATH).toString('base64');
 const NIGHT_WALLPAPER_DATA = ['chat-night.jpg', 'chat-extra-01.jpg', 'chat-extra-02.jpg', 'chat-extra-03.jpg', 'chat-extra-04.jpg']
@@ -340,9 +343,7 @@ export async function renderTelegramChat(scene) {
   const shiftedResponse = responseImage
     ? `<g transform="translate(0 ${resTop - imageY})">${imageResponse}</g>`
     : outgoingBubble({ x: responseX, y: resTop, width: responseWidth, lines: replyLines, time: replyTime }, theme).svg;
-  const labelY = variant === 2 ? 198 : 203;
-  const disclosure = `<g><rect x="620" y="${labelY}" width="184" height="27" rx="14" fill="${theme === 'night' ? '#303137' : '#f4f8e8'}" fill-opacity=".9"/><text x="712" y="${labelY + 18}" text-anchor="middle" font-size="12" font-weight="700" fill="${theme === 'night' ? '#d3d4db' : '#536b55'}">CONTENIDO GENERADO</text></g>`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><style>@font-face{font-family:ChatInter;src:url(data:font/ttf;base64,${FONT_DATA}) format('truetype')}text{font-family:ChatInter,Arial,sans-serif}</style>${wallpaper(theme, scene.wallpaperAsset)}<g clip-path="url(#chatClip)">${attachment}${shiftedMessage}${shiftedResponse}</g>${disclosure}${header(scene, icons.back, theme)}${composer(icons, theme)}<rect x="338" y="1580" width="224" height="7" rx="4" fill="${theme === 'night' ? '#fff' : '#111812'}"/></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><style>${FONT_STYLE}</style>${wallpaper(theme, scene.wallpaperAsset)}<g clip-path="url(#chatClip)">${attachment}${shiftedMessage}${shiftedResponse}</g>${header(scene, icons.back, theme)}${composer(icons, theme)}<rect x="338" y="1580" width="224" height="7" rx="4" fill="${theme === 'night' ? '#fff' : '#111812'}"/></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
