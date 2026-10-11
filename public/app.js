@@ -3,6 +3,8 @@ let quantity = 10;
 let pollTimer = null;
 let lastCompleted = -1;
 let toastTimer;
+let selectionMode = false;
+const selectedIds = new Set();
 
 async function api(url, options = {}) {
   const controller = new AbortController();
@@ -32,6 +34,18 @@ function formatTime(value){ return new Intl.DateTimeFormat('es-PE',{hour:'numeri
 function formatDay(key){ const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Lima',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); if(key===today)return 'Hoy'; const d=new Date(`${key}T12:00:00`); return new Intl.DateTimeFormat('es-PE',{weekday:'long',day:'numeric',month:'long'}).format(d).replace(/^./,c=>c.toUpperCase()); }
 function updateQuantity(next){ quantity=Math.max(1,Math.min(50,next)); $('#quantity-value').textContent=String(quantity); $('#quantity-minus').disabled=quantity===1; $('#quantity-plus').disabled=quantity===50; }
 
+function updateSelectionUI(){
+  const count=selectedIds.size;
+  $('#selection-count').textContent=`${count} ${count===1?'seleccionada':'seleccionadas'}`;
+  $('#delete-selected').disabled=count===0;
+  document.querySelectorAll('.image-card').forEach(card=>card.classList.toggle('selected',selectedIds.has(card.dataset.imageId)));
+}
+function setSelectionMode(enabled){
+  selectionMode=enabled; document.body.classList.toggle('selection-mode',enabled); $('#selection-bar').classList.toggle('hidden',!enabled); $('#select-button').textContent=enabled?'Seleccionando':'Seleccionar';
+  if(!enabled)selectedIds.clear(); updateSelectionUI();
+}
+function toggleSelected(id){ selectedIds.has(id)?selectedIds.delete(id):selectedIds.add(id); updateSelectionUI(); }
+
 function openViewer(image){ $('#viewer-image').src=image.url; $('#viewer-image').alt=`Imagen de chat de ${image.name}`; $('#viewer-download').href=image.downloadUrl; $('#viewer').showModal(); }
 function renderGallery(data){
   const host=$('#gallery-groups'); host.replaceChildren();
@@ -39,15 +53,20 @@ function renderGallery(data){
     const section=document.createElement('section'); section.className='day-group';
     const heading=document.createElement('div'); heading.className='day-heading';
     const title=document.createElement('h3'); title.textContent=formatDay(group.dayKey);
+    const actions=document.createElement('div'); actions.className='day-heading-actions';
     const count=document.createElement('span'); count.textContent=`${group.images.length} ${group.images.length===1?'imagen':'imágenes'}`;
-    heading.append(title,count);
+    const selectDay=document.createElement('button'); selectDay.type='button'; selectDay.className='select-day'; selectDay.textContent='Seleccionar día';
+    selectDay.addEventListener('click',()=>{const allSelected=group.images.every(image=>selectedIds.has(image.id));for(const image of group.images){allSelected?selectedIds.delete(image.id):selectedIds.add(image.id);}updateSelectionUI();selectDay.textContent=allSelected?'Seleccionar día':'Quitar día';});
+    actions.append(count,selectDay); heading.append(title,actions);
     const grid=document.createElement('div'); grid.className='gallery-grid';
     for(const image of group.images){
       const card=$('#image-card-template').content.firstElementChild.cloneNode(true);
+      card.dataset.imageId=image.id;
       const img=card.querySelector('img'); img.src=image.url; img.alt=`Imagen de chat de ${image.name}`;
       card.querySelector('strong').textContent=image.name; card.querySelector('.image-card-footer span').textContent=formatTime(image.createdAt);
       card.querySelector('.download').href=image.downloadUrl;
-      card.querySelector('.image-open').addEventListener('click',()=>openViewer(image));
+      card.querySelector('.image-open').addEventListener('click',()=>selectionMode?toggleSelected(image.id):openViewer(image));
+      card.classList.toggle('selected',selectedIds.has(image.id));
       grid.append(card);
     }
     section.append(heading,grid); host.append(section);
@@ -118,6 +137,16 @@ $('#login-form').addEventListener('submit',async(event)=>{
 async function logout(){ try{await api('/api/logout',{method:'POST'});}catch{} $('#login-form').reset(); showLogin(); }
 $('#logout-button').addEventListener('click',logout);
 $('#refresh-button').addEventListener('click',async()=>{try{await Promise.all([loadGallery(),loadPhrases()]);showToast('Contenido actualizado.');}catch(error){showToast(error.message);}});
+$('#select-button').addEventListener('click',()=>setSelectionMode(!selectionMode));
+$('#selection-cancel').addEventListener('click',()=>setSelectionMode(false));
+$('#delete-selected').addEventListener('click',async()=>{
+  const ids=[...selectedIds];
+  if(!ids.length||!window.confirm(`¿Eliminar ${ids.length} ${ids.length===1?'imagen':'imágenes'}? Esta acción no se puede deshacer.`))return;
+  const button=$('#delete-selected'); button.disabled=true; button.textContent='Eliminando…';
+  try{const result=await api('/api/images',{method:'DELETE',body:JSON.stringify({ids})});setSelectionMode(false);await loadGallery();showToast(`${result.deleted} ${result.deleted===1?'imagen eliminada':'imágenes eliminadas'}.`);}
+  catch(error){showToast(error.message);button.disabled=false;}
+  finally{button.textContent='Eliminar';}
+});
 $('#viewer-close').addEventListener('click',()=>$('#viewer').close());
 $('#viewer').addEventListener('click',(event)=>{if(event.target===$('#viewer'))$('#viewer').close();});
 

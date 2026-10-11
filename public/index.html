@@ -51,7 +51,8 @@
       </section>
 
       <section class="gallery-section" id="gallery">
-        <div class="section-heading"><div><span class="eyebrow">Galería privada</span><h2>Tus imágenes</h2></div><button class="refresh" id="refresh-button" type="button" aria-label="Actualizar galería">Actualizar</button></div>
+        <div class="section-heading"><div><span class="eyebrow">Galería privada</span><h2>Tus imágenes</h2></div><div class="gallery-heading-actions"><button class="refresh" id="refresh-button" type="button" aria-label="Actualizar galería">Actualizar</button><button class="select-button" id="select-button" type="button">Seleccionar</button></div></div>
+        <div class="selection-bar hidden" id="selection-bar"><strong id="selection-count">0 seleccionadas</strong><div><button id="selection-cancel" type="button">Cancelar</button><button class="delete-selected" id="delete-selected" type="button" disabled>Eliminar</button></div></div>
         <div id="gallery-groups"></div>
         <div class="empty hidden" id="empty-state"><div>◎</div><h3>Todavía no hay imágenes</h3><p>Tu primera generación aparecerá aquí.</p></div>
       </section>
@@ -73,6 +74,6 @@
 
   <dialog class="viewer" id="viewer"><button id="viewer-close" class="viewer-close" aria-label="Cerrar">×</button><img id="viewer-image" alt="Vista ampliada"><a id="viewer-download" class="button viewer-download" download>Descargar imagen</a></dialog>
   <div class="toast" id="toast" role="status"></div>
-  <template id="image-card-template"><article class="image-card"><button class="image-open" type="button"><img loading="lazy" alt="Imagen de chat"></button><div class="image-card-footer"><div><strong></strong><span></span></div><a class="download" download aria-label="Descargar imagen">↓</a></div></article></template>
+  <template id="image-card-template"><article class="image-card"><button class="image-open" type="button"><img loading="lazy" alt="Imagen de chat"><span class="selection-check" aria-hidden="true">✓</span></button><div class="image-card-footer"><div><strong></strong><span></span></div><a class="download" download aria-label="Descargar imagen">↓</a></div></article></template>
 </body>
 </html>

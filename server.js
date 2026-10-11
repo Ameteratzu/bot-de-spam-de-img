@@ -728,6 +728,21 @@ app.get('/api/images', requireAuth, (req, res) => {
   res.json({ groups: grouped, total: rows.length, today: usageToday(req.session.email), timezone: TIME_ZONE });
 });
 
+app.delete('/api/images', requireAuth, (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids.map(String))] : [];
+  if (!ids.length || ids.length > 500 || ids.some((id) => !/^[0-9a-f-]{36}$/i.test(id))) {
+    return res.status(400).json({ error: 'Selecciona entre 1 y 500 imágenes válidas.' });
+  }
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT id, filename FROM images WHERE owner_email = ? AND id IN (${placeholders})`).all(req.session.email, ...ids);
+  if (!rows.length) return res.status(404).json({ error: 'No encontramos imágenes tuyas con esa selección.' });
+  db.transaction(() => {
+    db.prepare(`DELETE FROM images WHERE owner_email = ? AND id IN (${placeholders})`).run(req.session.email, ...rows.map((row) => row.id));
+  })();
+  for (const row of rows) fs.rmSync(path.join(IMAGE_DIR, path.basename(row.filename)), { force: true });
+  res.json({ deleted: rows.length });
+});
+
 function parsePhrase(req, res) {
   const outcome = req.body?.outcome;
   const body = typeof req.body?.body === 'string' ? req.body.body.trim().replace(/\s+/g, ' ') : '';
