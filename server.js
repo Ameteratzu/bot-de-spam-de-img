@@ -22,6 +22,8 @@ const COOKIE_SECURE = process.env.COOKIE_SECURE === undefined
   : process.env.COOKIE_SECURE === 'true';
 const MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-lite-image';
 const AUTOMATIC_RENDER_MODE = 'template';
+const ALEXANDER_EMAIL = (process.env.ALEXANDER_EMAIL || 'alexander@testimoniostelegram.com').trim().toLowerCase();
+const JORGE_EMAIL = (process.env.JORGE_EMAIL || 'jorge@testimoniostelegram.com').trim().toLowerCase();
 const DATA_DIR = path.join(__dirname, 'data');
 const IMAGE_DIR = path.join(__dirname, 'generated');
 const REFERENCE_DIR = path.join(__dirname, 'references', 'trading-history');
@@ -73,6 +75,32 @@ db.exec(`
     scene_json TEXT NOT NULL,
     prompt TEXT NOT NULL,
     created_at TEXT NOT NULL
+  );
+`);
+
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((item) => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+// Existing installations started with one shared gallery. Preserve those
+// records for Alexander, then isolate all new records by authenticated email.
+ensureColumn('images', 'owner_email', `TEXT NOT NULL DEFAULT '${ALEXANDER_EMAIL.replaceAll("'", "''")}'`);
+ensureColumn('template_previews', 'owner_email', `TEXT NOT NULL DEFAULT '${ALEXANDER_EMAIL.replaceAll("'", "''")}'`);
+db.exec(`
+  CREATE INDEX IF NOT EXISTS images_owner_created_idx ON images(owner_email, created_at DESC);
+  CREATE INDEX IF NOT EXISTS previews_owner_idx ON template_previews(owner_email);
+  CREATE TABLE IF NOT EXISTS user_daily_generation_jobs (
+    owner_email TEXT NOT NULL,
+    day_key TEXT NOT NULL,
+    slot INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    image_id TEXT,
+    error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_email, day_key, slot)
   );
 `);
 
@@ -428,15 +456,17 @@ function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIn
   };
 }
 
-function automaticTradePrompt(slot, today, advancePhrase = true, themeOverride = null) {
+function automaticTradePrompt(slot, today, advancePhrase = true, themeOverride = null, ownerEmail = ALEXANDER_EMAIL) {
   const theme = themeOverride || themeForAutomaticSlot(slot);
   const pool = theme === 'night' ? tradeReferences.length : tradeReferences.length - 1;
-  const offset = ([...today].reduce((total, char) => total + char.charCodeAt(0), 0) + composeSequence) % pool;
+  const ownerOffset = [...ownerEmail].reduce((total, char) => total + char.charCodeAt(0), 0);
+  const offset = ([...today].reduce((total, char) => total + char.charCodeAt(0), 0) + composeSequence + ownerOffset) % pool;
   const referenceIndex = (offset + slot) % pool;
   const regionIndex = (offset + slot) % regionalStyles.length;
   const loss = slot === 3 || slot === 7;
   const phraseIndex = nextPhraseIndex(loss, advancePhrase);
-  const contactIndex = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
+  const ownerImageCount = db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ?').get(ownerEmail).count;
+  const contactIndex = ownerImageCount + ownerOffset;
   const layoutIndex = contactIndex + [...today].reduce((total, char) => total + char.charCodeAt(0), 0);
   return { referenceIndex, ...tradeBrief(tradeReferences[referenceIndex], regionalStyles[regionIndex], loss, phraseIndex, contactIndex, layoutIndex, theme) };
 }
@@ -462,12 +492,28 @@ function localMinuteOfDay(date = new Date()) {
 }
 
 function requireAuth(req, res, next) {
-  if (!req.session.authenticated) return res.status(401).json({ error: 'Inicia sesión para continuar.' });
+  if (!req.session.authenticated || !req.session.email) return res.status(401).json({ error: 'Inicia sesión para continuar.' });
   next();
 }
 
+function loginAccounts() {
+  return [
+    { email: ALEXANDER_EMAIL, password: process.env.ALEXANDER_PASSWORD || '' },
+    { email: JORGE_EMAIL, password: process.env.JORGE_PASSWORD || '' }
+  ];
+}
+
 function hasLoginConfig() {
-  return Boolean(process.env.LOGIN_EMAIL && process.env.LOGIN_PASSWORD && process.env.SESSION_SECRET);
+  return Boolean(process.env.ALEXANDER_PASSWORD && process.env.JORGE_PASSWORD && process.env.SESSION_SECRET);
+}
+
+async function passwordMatches(password, expected) {
+  if (!expected) return false;
+  if (expected.startsWith('$2')) return bcrypt.compare(password, expected);
+  return crypto.timingSafeEqual(
+    Buffer.from(password.padEnd(256, '\0').slice(0, 256)),
+    Buffer.from(expected.padEnd(256, '\0').slice(0, 256))
+  );
 }
 
 app.use('/api', rateLimit({ windowMs: 60_000, limit: 90, standardHeaders: 'draft-8', legacyHeaders: false }));
@@ -479,26 +525,18 @@ app.get('/api/config', (_req, res) => {
 
 app.post('/api/login', async (req, res, next) => {
   try {
-    if (!hasLoginConfig()) return res.status(503).json({ error: 'Faltan LOGIN_EMAIL, LOGIN_PASSWORD o SESSION_SECRET en .env.' });
+    if (!hasLoginConfig()) return res.status(503).json({ error: 'Faltan ALEXANDER_PASSWORD, JORGE_PASSWORD o SESSION_SECRET en .env.' });
     const { email, password } = req.body || {};
     if (typeof email !== 'string' || typeof password !== 'string' || email.length > 254 || password.length > 256) {
       return res.status(400).json({ error: 'Correo o contraseña inválidos.' });
     }
-    const emailMatches = crypto.timingSafeEqual(
-      Buffer.from(email.trim().toLowerCase().padEnd(254, '\0').slice(0, 254)),
-      Buffer.from(process.env.LOGIN_EMAIL.trim().toLowerCase().padEnd(254, '\0').slice(0, 254))
-    );
-    const passwordMatches = process.env.LOGIN_PASSWORD.startsWith('$2')
-      ? await bcrypt.compare(password, process.env.LOGIN_PASSWORD)
-      : crypto.timingSafeEqual(
-          Buffer.from(password.padEnd(256, '\0').slice(0, 256)),
-          Buffer.from(process.env.LOGIN_PASSWORD.padEnd(256, '\0').slice(0, 256))
-        );
-    if (!emailMatches || !passwordMatches) return res.status(401).json({ error: 'Correo o contraseña incorrectos.' });
+    const normalizedEmail = email.trim().toLowerCase();
+    const account = loginAccounts().find((item) => item.email === normalizedEmail);
+    if (!account || !await passwordMatches(password, account.password)) return res.status(401).json({ error: 'Correo o contraseña incorrectos.' });
     req.session.regenerate((err) => {
       if (err) return next(err);
       req.session.authenticated = true;
-      req.session.email = process.env.LOGIN_EMAIL.trim().toLowerCase();
+      req.session.email = account.email;
       req.session.save((saveErr) => {
         if (saveErr) return next(saveErr);
         res.json({ ok: true, email: req.session.email });
@@ -510,7 +548,7 @@ app.post('/api/login', async (req, res, next) => {
 app.post('/api/logout', requireAuth, (req, res, next) => {
   req.session.destroy((err) => {
     if (err) return next(err);
-    res.clearCookie('chatstudio.sid', { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production' });
+    res.clearCookie('chatstudio.sid', { httpOnly: true, sameSite: 'strict', secure: COOKIE_SECURE });
     res.json({ ok: true });
   });
 });
@@ -519,9 +557,9 @@ app.get('/api/me', requireAuth, (req, res) => {
   res.json({ email: req.session.email });
 });
 
-function usageToday() {
+function usageToday(ownerEmail) {
   const today = dayKey();
-  return db.prepare('SELECT COUNT(*) AS count FROM images WHERE day_key = ?').get(today).count;
+  return db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ? AND day_key = ?').get(ownerEmail, today).count;
 }
 
 function imagePayload(row) {
@@ -536,7 +574,7 @@ function imagePayload(row) {
   };
 }
 
-async function generateAndStoreImage(userPrompt, referenceIndex = null) {
+async function generateAndStoreImage(userPrompt, referenceIndex = null, ownerEmail) {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const generationInstruction = `Create one polished 9:16 fictional mobile chat image based on this creative brief. Keep text in natural Spanish. Fictional financial results and testimonials must be clearly marked within the image; never present them as verified evidence. Brief: ${userPrompt}`;
   const input = referenceIndex === null ? generationInstruction : [
@@ -561,8 +599,8 @@ async function generateAndStoreImage(userPrompt, referenceIndex = null) {
   fs.writeFileSync(filePath, imageBuffer, { flag: 'wx' });
   const createdAt = new Date().toISOString();
   try {
-    db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, filename, displayName, userPrompt, createdAt, dayKey(new Date(createdAt)), 'image/jpeg');
+    db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type, owner_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, filename, displayName, userPrompt, createdAt, dayKey(new Date(createdAt)), 'image/jpeg', ownerEmail);
   } catch (err) {
     fs.rmSync(filePath, { force: true });
     throw err;
@@ -570,7 +608,7 @@ async function generateAndStoreImage(userPrompt, referenceIndex = null) {
   return db.prepare('SELECT * FROM images WHERE id = ?').get(id);
 }
 
-async function generateAndStoreTemplate({ scene, prompt }) {
+async function generateAndStoreTemplate({ scene, prompt }, ownerEmail) {
   const imageBuffer = await renderTelegramChat(scene);
   const id = crypto.randomUUID();
   const filename = `${dayKey()}-plantilla-${id.slice(0, 8)}.png`;
@@ -578,8 +616,8 @@ async function generateAndStoreTemplate({ scene, prompt }) {
   fs.writeFileSync(filePath, imageBuffer, { flag: 'wx' });
   const createdAt = new Date().toISOString();
   try {
-    db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, filename, `${scene.contact.name} ${scene.contact.emoji}`, prompt, createdAt, dayKey(new Date(createdAt)), 'image/png');
+    db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type, owner_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, filename, `${scene.contact.name} ${scene.contact.emoji}`, prompt, createdAt, dayKey(new Date(createdAt)), 'image/png', ownerEmail);
   } catch (err) {
     fs.rmSync(filePath, { force: true });
     throw err;
@@ -588,40 +626,43 @@ async function generateAndStoreTemplate({ scene, prompt }) {
 }
 
 let schedulerRunning = false;
-const jobInsert = db.prepare('INSERT OR IGNORE INTO daily_generation_jobs (day_key, slot, prompt, status, updated_at) VALUES (?, ?, ?, \'pending\', ?)');
-const jobUpdate = db.prepare('UPDATE daily_generation_jobs SET status = ?, attempts = ?, image_id = ?, error = ?, updated_at = ? WHERE day_key = ? AND slot = ?');
+const jobInsert = db.prepare('INSERT OR IGNORE INTO user_daily_generation_jobs (owner_email, day_key, slot, prompt, status, updated_at) VALUES (?, ?, ?, ?, \'pending\', ?)');
+const jobUpdate = db.prepare('UPDATE user_daily_generation_jobs SET status = ?, attempts = ?, image_id = ?, error = ?, updated_at = ? WHERE owner_email = ? AND day_key = ? AND slot = ?');
 
 async function runDailyGenerator() {
+  if (!hasLoginConfig()) return;
   if (schedulerRunning) return;
   schedulerRunning = true;
   try {
     const today = dayKey();
     const currentMinute = localMinuteOfDay();
     const latestDueSlot = Math.min(9, Math.floor(currentMinute / 144));
-    const insertDueJobs = db.transaction(() => {
-      for (let slot = 0; slot <= latestDueSlot; slot++) {
-        jobInsert.run(today, slot, automaticTradePrompt(slot, today, false).prompt, new Date().toISOString());
-      }
-    });
-    insertDueJobs();
+    for (const account of loginAccounts()) {
+      const insertDueJobs = db.transaction(() => {
+        for (let slot = 0; slot <= latestDueSlot; slot++) {
+          jobInsert.run(account.email, today, slot, automaticTradePrompt(slot, today, false, null, account.email).prompt, new Date().toISOString());
+        }
+      });
+      insertDueJobs();
 
-    while (true) {
-      const now = Date.now();
-      const job = db.prepare(`SELECT * FROM daily_generation_jobs
-        WHERE day_key = ? AND (status = 'pending' OR (status = 'failed' AND attempts < 3 AND updated_at <= ?))
-        ORDER BY slot LIMIT 1`).get(today, new Date(now - 15 * 60_000).toISOString());
-      if (!job) break;
-      const attempts = job.attempts + 1;
-      jobUpdate.run('running', attempts, null, null, new Date().toISOString(), today, job.slot);
-      try {
-        const automatic = automaticTradePrompt(job.slot, today);
-        const image = await generateAndStoreTemplate(automatic);
-        jobUpdate.run('completed', attempts, image.id, null, new Date().toISOString(), today, job.slot);
-        console.log(`Automatic image ${job.slot + 1}/10 generated for ${today}.`);
-      } catch (error) {
-        jobUpdate.run('failed', attempts, null, String(error.message || 'Generation failed').slice(0, 500), new Date().toISOString(), today, job.slot);
-        console.error(`Automatic image ${job.slot + 1}/10 failed (attempt ${attempts}/3):`, error.message);
-        break;
+      while (true) {
+        const now = Date.now();
+        const job = db.prepare(`SELECT * FROM user_daily_generation_jobs
+          WHERE owner_email = ? AND day_key = ? AND (status = 'pending' OR (status = 'failed' AND attempts < 3 AND updated_at <= ?))
+          ORDER BY slot LIMIT 1`).get(account.email, today, new Date(now - 15 * 60_000).toISOString());
+        if (!job) break;
+        const attempts = job.attempts + 1;
+        jobUpdate.run('running', attempts, null, null, new Date().toISOString(), account.email, today, job.slot);
+        try {
+          const automatic = automaticTradePrompt(job.slot, today, true, null, account.email);
+          const image = await generateAndStoreTemplate(automatic, account.email);
+          jobUpdate.run('completed', attempts, image.id, null, new Date().toISOString(), account.email, today, job.slot);
+          console.log(`Automatic image ${job.slot + 1}/10 generated for ${account.email} on ${today}.`);
+        } catch (error) {
+          jobUpdate.run('failed', attempts, null, String(error.message || 'Generation failed').slice(0, 500), new Date().toISOString(), account.email, today, job.slot);
+          console.error(`Automatic image ${job.slot + 1}/10 failed for ${account.email} (attempt ${attempts}/3):`, error.message);
+          break;
+        }
       }
     }
   } finally {
@@ -630,8 +671,8 @@ async function runDailyGenerator() {
 }
 
 app.get('/api/images', requireAuth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM images ORDER BY created_at DESC LIMIT 120').all();
-  res.json({ images: rows.map(imagePayload), today: usageToday(), timezone: TIME_ZONE });
+  const rows = db.prepare('SELECT * FROM images WHERE owner_email = ? ORDER BY created_at DESC LIMIT 120').all(req.session.email);
+  res.json({ images: rows.map(imagePayload), today: usageToday(req.session.email), timezone: TIME_ZONE });
 });
 
 function parsePhrase(req, res) {
@@ -689,15 +730,16 @@ app.post('/api/generate', requireAuth, async (req, res, next) => {
 
     const usesTradingReference = /\b(?:xauusd|trading|trade|operaci[oó]n(?:es)?|historial|ganancias?|p[eé]rdidas?)\b/i.test(userPrompt);
     const gainSlots = [0, 1, 2, 4, 5, 6, 8, 9];
-    const automatic = usesTradingReference ? automaticTradePrompt(gainSlots[db.prepare('SELECT COUNT(*) AS count FROM images').get().count % gainSlots.length], dayKey(), true, nextManualTheme()) : null;
+    const imageCount = db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ?').get(req.session.email).count;
+    const automatic = usesTradingReference ? automaticTradePrompt(gainSlots[imageCount % gainSlots.length], dayKey(), true, nextManualTheme(), req.session.email) : null;
     if (automatic) {
-      const row = await generateAndStoreTemplate(automatic);
-      return res.status(201).json({ image: imagePayload(row), today: usageToday() });
+      const row = await generateAndStoreTemplate(automatic, req.session.email);
+      return res.status(201).json({ image: imagePayload(row), today: usageToday(req.session.email) });
     }
     if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: 'Configura GEMINI_API_KEY en el archivo .env.' });
     const prompt = automatic ? `${automatic.prompt} Instrucción adicional: ${userPrompt}` : userPrompt;
-    const row = await generateAndStoreImage(prompt, automatic?.referenceIndex ?? null);
-    res.status(201).json({ image: imagePayload(row), today: usageToday() });
+    const row = await generateAndStoreImage(prompt, automatic?.referenceIndex ?? null, req.session.email);
+    res.status(201).json({ image: imagePayload(row), today: usageToday(req.session.email) });
   } catch (err) {
     if (err?.status || err?.statusCode) {
       console.error('Gemini generation error:', err.message);
@@ -707,8 +749,8 @@ app.post('/api/generate', requireAuth, async (req, res, next) => {
   }
 });
 
-function previewRow(token) {
-  const row = db.prepare('SELECT * FROM template_previews WHERE token = ?').get(token);
+function previewRow(token, ownerEmail) {
+  const row = db.prepare('SELECT * FROM template_previews WHERE token = ? AND owner_email = ?').get(token, ownerEmail);
   return row && Date.now() - Date.parse(row.created_at) < 3600000 ? row : null;
 }
 
@@ -724,12 +766,12 @@ function addressMessage(message, preferredAddress, previousAddress = '') {
 
 app.post('/api/preview-template', requireAuth, async (req, res, next) => {
   try {
-    const previous = req.body?.previewToken ? previewRow(String(req.body.previewToken)) : null;
+    const previous = req.body?.previewToken ? previewRow(String(req.body.previewToken), req.session.email) : null;
     if (req.body?.previewToken && !previous) return res.status(404).json({ error: 'La vista previa caducó. Crea una nueva.' });
     const outcome = req.body?.outcome === 'loss' ? 'loss' : 'gain';
-    const count = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
+    const count = db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ?').get(req.session.email).count;
     const slots = outcome === 'gain' ? [0, 1, 2, 4, 5, 6, 8, 9] : [3, 7];
-    const automatic = previous ? { scene: JSON.parse(previous.scene_json), prompt: previous.prompt } : automaticTradePrompt(slots[count % slots.length], dayKey(), true, nextManualTheme());
+    const automatic = previous ? { scene: JSON.parse(previous.scene_json), prompt: previous.prompt } : automaticTradePrompt(slots[count % slots.length], dayKey(), true, nextManualTheme(), req.session.email);
     const scene = automatic.scene;
     const variant = req.body?.layoutVariant === undefined ? scene.layoutVariant : Number(req.body.layoutVariant);
     if (!Number.isInteger(variant) || variant < 0 || variant > 2) return res.status(400).json({ error: 'Selecciona una escena válida.' });
@@ -752,15 +794,15 @@ app.post('/api/preview-template', requireAuth, async (req, res, next) => {
     scene.attachmentCrop = ['full', 'lower-cut', 'full'][variant];
     scene.messages = [{ role: 'received', text: scene.message }, { role: 'sent', text: scene.reply }];
     const token = previous?.token || crypto.randomUUID();
-    db.prepare('INSERT OR REPLACE INTO template_previews (token, scene_json, prompt, created_at) VALUES (?, ?, ?, ?)')
-      .run(token, JSON.stringify(scene), automatic.prompt, new Date().toISOString());
+    db.prepare('INSERT OR REPLACE INTO template_previews (token, scene_json, prompt, created_at, owner_email) VALUES (?, ?, ?, ?, ?)')
+      .run(token, JSON.stringify(scene), automatic.prompt, new Date().toISOString(), req.session.email);
     res.json({ previewToken: token, previewUrl: `/api/preview-template/${token}/file`, layoutVariant: variant, message: scene.message, reply: scene.reply, preferredAddress: scene.preferredAddress || '' });
   } catch (err) { next(err); }
 });
 
 app.get('/api/preview-template/:token/file', requireAuth, async (req, res, next) => {
   try {
-    const row = previewRow(req.params.token);
+    const row = previewRow(req.params.token, req.session.email);
     if (!row) return res.status(404).json({ error: 'La vista previa caducó.' });
     res.set('Cache-Control', 'no-store').type('png').send(await renderTelegramChat(JSON.parse(row.scene_json)));
   } catch (err) { next(err); }
@@ -768,20 +810,20 @@ app.get('/api/preview-template/:token/file', requireAuth, async (req, res, next)
 
 app.post('/api/generate-template', requireAuth, async (req, res, next) => {
   try {
-    const preview = req.body?.previewToken ? previewRow(String(req.body.previewToken)) : null;
+    const preview = req.body?.previewToken ? previewRow(String(req.body.previewToken), req.session.email) : null;
     if (req.body?.previewToken && !preview) return res.status(404).json({ error: 'La vista previa caducó. Crea una nueva.' });
     if (preview) {
-      const row = await generateAndStoreTemplate({ scene: JSON.parse(preview.scene_json), prompt: preview.prompt });
-      db.prepare('DELETE FROM template_previews WHERE token = ?').run(preview.token);
-      return res.status(201).json({ image: imagePayload(row), today: usageToday() });
+      const row = await generateAndStoreTemplate({ scene: JSON.parse(preview.scene_json), prompt: preview.prompt }, req.session.email);
+      db.prepare('DELETE FROM template_previews WHERE token = ? AND owner_email = ?').run(preview.token, req.session.email);
+      return res.status(201).json({ image: imagePayload(row), today: usageToday(req.session.email) });
     }
     const outcome = req.body?.outcome === 'loss' ? 'loss' : 'gain';
-    const count = db.prepare('SELECT COUNT(*) AS count FROM images').get().count;
+    const count = db.prepare('SELECT COUNT(*) AS count FROM images WHERE owner_email = ?').get(req.session.email).count;
     const slots = outcome === 'gain' ? [0, 1, 2, 4, 5, 6, 8, 9] : [3, 7];
     const slot = slots[count % slots.length];
-    const automatic = automaticTradePrompt(slot, dayKey(), true, nextManualTheme());
-    const row = await generateAndStoreTemplate(automatic);
-    res.status(201).json({ image: imagePayload(row), today: usageToday() });
+    const automatic = automaticTradePrompt(slot, dayKey(), true, nextManualTheme(), req.session.email);
+    const row = await generateAndStoreTemplate(automatic, req.session.email);
+    res.status(201).json({ image: imagePayload(row), today: usageToday(req.session.email) });
   } catch (err) { next(err); }
 });
 
@@ -802,15 +844,15 @@ app.post('/api/import-authentic', requireAuth, express.raw({ type: ['image/png',
     fs.writeFileSync(filePath, req.body, { flag: 'wx' });
     const createdAt = new Date().toISOString();
     try {
-      db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(id, filename, 'Captura original', 'Captura original aportada por el usuario, sin edición.', createdAt, dayKey(new Date(createdAt)), `image/${info.format}`);
+      db.prepare('INSERT INTO images (id, filename, display_name, prompt, created_at, day_key, mime_type, owner_email) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, filename, 'Captura original', 'Captura original aportada por el usuario, sin edición.', createdAt, dayKey(new Date(createdAt)), `image/${info.format}`, req.session.email);
     } catch (error) { fs.rmSync(filePath, { force: true }); throw error; }
-    res.status(201).json({ image: imagePayload(db.prepare('SELECT * FROM images WHERE id = ?').get(id)), today: usageToday() });
+    res.status(201).json({ image: imagePayload(db.prepare('SELECT * FROM images WHERE id = ? AND owner_email = ?').get(id, req.session.email)), today: usageToday(req.session.email) });
   } catch (error) { next(error); }
 });
 
 app.get('/api/images/:id/file', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
+  const row = db.prepare('SELECT * FROM images WHERE id = ? AND owner_email = ?').get(req.params.id, req.session.email);
   if (!row) return res.status(404).json({ error: 'No encontramos esa imagen.' });
   const safePath = path.join(IMAGE_DIR, path.basename(row.filename));
   if (!fs.existsSync(safePath)) return res.status(404).json({ error: 'El archivo de imagen ya no está disponible.' });
@@ -829,7 +871,7 @@ app.use((err, _req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`Chat Image Studio listo en http://localhost:${PORT}`);
   if (!process.env.GEMINI_API_KEY) console.warn('GEMINI_API_KEY no está configurada; el login funciona, pero generar está deshabilitado.');
-  if (!hasLoginConfig()) console.warn('Configura LOGIN_EMAIL, LOGIN_PASSWORD y SESSION_SECRET antes de iniciar sesión.');
+  if (!hasLoginConfig()) console.warn('Configura ALEXANDER_PASSWORD, JORGE_PASSWORD y SESSION_SECRET antes de iniciar sesión.');
   if (process.env.SESSION_SECRET === 'development-only-change-this-secret') console.warn('SESSION_SECRET tiene el valor de desarrollo; reemplázalo antes de exponer el servidor.');
   if (process.env.GEMINI_API_KEY && /AIza/.test(process.env.GEMINI_API_KEY)) {
     console.warn('Verifica en AI Studio que la clave está restringida y es una clave de autorización compatible con las políticas actuales de Gemini API.');

@@ -17,7 +17,9 @@ Copy-Item .env.example .env
 
 Completa `.env`:
 
-- `LOGIN_EMAIL` y `LOGIN_PASSWORD`: credenciales compartidas de acceso.
+- `ALEXANDER_EMAIL` y `ALEXANDER_PASSWORD`: acceso de Alexander.
+- `JORGE_EMAIL` y `JORGE_PASSWORD`: acceso de Jorge.
+- Cada cuenta conserva su propia galería, vistas previas y diez generaciones automáticas diarias.
 - `GEMINI_API_KEY`: clave privada de Gemini; no la pongas en el código del navegador.
 - `SESSION_SECRET`: secreto largo y aleatorio para firmar sesiones.
 - `GEMINI_IMAGE_MODEL`: por defecto `gemini-3.1-flash-lite-image` para generaciones manuales con IA.
@@ -65,7 +67,7 @@ docker compose -f docker-compose.yml -f docker-compose.local.yml down
 - Ambos directorios y `.env` están excluidos de Git.
 - Se requiere HTTPS en producción para las cookies seguras de sesión.
 - Respaldar `data/` y `generated/` conserva la galería.
-- La contraseña también admite un hash bcrypt; si `LOGIN_PASSWORD` comienza con `$2`, se compara como bcrypt.
+- Las contraseñas también admiten hashes bcrypt; si comienzan con `$2`, se comparan como bcrypt.
 
 ## Generación automática
 

@@ -8,7 +8,7 @@ dotenv.config({ path: path.join(root, '.env') });
 const base = `http://localhost:${process.env.PORT || 3000}`;
 const login = await fetch(`${base}/api/login`, {
   method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ email: process.env.LOGIN_EMAIL, password: process.env.LOGIN_PASSWORD })
+  body: JSON.stringify({ email: process.env.ALEXANDER_EMAIL || 'alexander@testimoniostelegram.com', password: process.env.ALEXANDER_PASSWORD })
 });
 if (!login.ok) throw new Error(`Login HTTP ${login.status}`);
 const cookie = login.headers.get('set-cookie')?.split(';')[0];

@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 
 const base = 'http://localhost:3000';
-const login = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: process.env.LOGIN_EMAIL, password: process.env.LOGIN_PASSWORD }) });
+const login = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: process.env.ALEXANDER_EMAIL || 'alexander@testimoniostelegram.com', password: process.env.ALEXANDER_PASSWORD }) });
 assert.equal(login.status, 200);
 const cookie = login.headers.get('set-cookie').split(';')[0];
 const db = new Database(path.resolve('data/studio.sqlite'), { readonly: true });
