@@ -43,6 +43,8 @@ const TELEGRAM_ICON_DIR = path.join(ROOT, 'assets', 'icons', 'telegram');
 const iconCache = new Map();
 const W = 900;
 const H = 1600;
+const PHONE_LEFT = 62;
+const PHONE_WIDTH = 742;
 const CHAT_TOP = 165;
 const COMPOSER_TOP = 1450;
 const MESSAGE_FONT_SIZE = 36;
@@ -344,7 +346,9 @@ export async function renderTelegramChat(scene) {
     ? `<g transform="translate(0 ${resTop - imageY})">${imageResponse}</g>`
     : outgoingBubble({ x: responseX, y: resTop, width: responseWidth, lines: replyLines, time: replyTime }, theme).svg;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><style>${FONT_STYLE}</style>${wallpaper(theme, scene.wallpaperAsset)}<g clip-path="url(#chatClip)">${attachment}${shiftedMessage}${shiftedResponse}</g>${header(scene, icons.back, theme)}${composer(icons, theme)}<rect x="338" y="1580" width="224" height="7" rx="4" fill="${theme === 'night' ? '#fff' : '#111812'}"/></svg>`;
-  return sharp(Buffer.from(svg)).png().toBuffer();
+  // The drawing grid includes the old reference-image gutters. Export only
+  // the actual phone viewport so the result is a normal edge-to-edge capture.
+  return sharp(Buffer.from(svg)).extract({ left: PHONE_LEFT, top: 0, width: PHONE_WIDTH, height: H }).png().toBuffer();
 }
 
-export const telegramImageSize = { width: W, height: H };
+export const telegramImageSize = { width: PHONE_WIDTH, height: H };
