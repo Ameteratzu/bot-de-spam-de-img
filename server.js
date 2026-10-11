@@ -319,21 +319,50 @@ const tradeReferences = [
   { file: '07.png', rows: 4, side: 'buy', topHeight: 660, profitCents: 27352, swapCents: -2824 },
   { file: '08-night.png', rows: 4, side: 'buy', topHeight: 900, profitCents: 31971, swapCents: -304 }
 ];
-const chatContacts = [
-  'Mateo Rojas', 'Camila Torres', 'Andrés Mejía', 'Sofía Paredes', 'Daniel Vargas',
-  'Lucía Herrera', 'Nicolás Muñoz', 'Valentina Cruz', 'Joaquín Salazar', 'Mariana Soto',
-  'Gabriel Molina', 'Renata Castillo', 'Emilio Núñez', 'Isabella Reyes', 'Sebastián Romero',
-  'Paula Mendoza', 'Alejandro Peña', 'Natalia Guzmán', 'Carlos Peralta', 'Laura Jiménez'
+const maleContactNames = [
+  'Mateo', 'Andrés', 'Daniel', 'Nicolás', 'Joaquín', 'Gabriel', 'Emilio', 'Sebastián', 'Alejandro', 'Carlos',
+  'Santiago', 'Samuel', 'Leonardo', 'Martín', 'Adrián', 'Diego', 'Fernando', 'Felipe', 'Mauricio', 'Ricardo',
+  'Javier', 'Miguel', 'Ángel', 'David', 'Esteban', 'Tomás', 'Cristian', 'Jonathan', 'Manuel', 'Eduardo',
+  'Rafael', 'Rodrigo', 'Antonio', 'Francisco', 'Luis', 'José', 'Víctor', 'Óscar', 'Bruno', 'Thiago'
 ];
-const femaleContactNames = new Set(['Camila', 'Sofía', 'Lucía', 'Valentina', 'Mariana', 'Renata', 'Isabella', 'Paula', 'Natalia', 'Laura']);
+const femaleContactNames = [
+  'Camila', 'Sofía', 'Lucía', 'Valentina', 'Mariana', 'Renata', 'Isabella', 'Paula', 'Natalia', 'Laura',
+  'Daniela', 'Gabriela', 'Andrea', 'Carolina', 'Alejandra', 'Fernanda', 'Catalina', 'Juliana', 'Verónica', 'Patricia',
+  'Mónica', 'Adriana', 'Lorena', 'Vanessa', 'Melissa', 'Elena', 'Sara', 'Victoria', 'Martina', 'Antonella',
+  'Claudia', 'Rocío', 'Noelia', 'Jimena', 'Paola', 'Diana', 'María', 'Ana', 'Mía', 'Amanda'
+];
+const contactFirstNames = [...maleContactNames, ...femaleContactNames];
+const contactSurnames = [
+  'Rojas', 'Torres', 'Mejía', 'Paredes', 'Vargas', 'Herrera', 'Muñoz', 'Cruz', 'Salazar', 'Soto',
+  'Molina', 'Castillo', 'Núñez', 'Reyes', 'Romero', 'Mendoza', 'Peña', 'Guzmán', 'Peralta', 'Jiménez',
+  'García', 'Rodríguez', 'Martínez', 'López', 'González', 'Pérez', 'Sánchez', 'Ramírez', 'Flores', 'Rivera',
+  'Gómez', 'Díaz', 'Morales', 'Ortiz', 'Silva', 'Ramos', 'Medina', 'Vega', 'Cabrera', 'Suárez',
+  'Acosta', 'Navarro', 'Campos', 'Delgado', 'Guerrero', 'Méndez', 'Valdez', 'Arias', 'Benítez', 'Cordero',
+  'Figueroa', 'Miranda', 'Ponce', 'Rosario', 'Santana', 'Espinoza', 'Alvarado', 'Contreras', 'Domínguez', 'Escobar',
+  'Fuentes', 'León', 'Montoya', 'Palacios', 'Quiñones', 'Rivas', 'Solano', 'Tapia', 'Villalobos', 'Zambrano'
+];
 const contactNameFormats = [
   (name) => name,
   (name) => `${name} Comunidad VIP`,
   (name) => `${name.split(' ')[0]} IA`,
   (name) => `${name} VIP`,
   () => 'COMUNIDAD VIP',
-  (name) => `${name.split(' ')[0]} Trading`
+  (name) => `${name.split(' ')[0]} Trading`,
+  (name) => `${name} Comunidad IA`,
+  (name) => `${name.split(' ')[0]} VIP`,
+  (name) => `${name} Equipo VIP`,
+  (name) => name
 ];
+function contactIdentity(index) {
+  const firstName = contactFirstNames[index % contactFirstNames.length];
+  let cursor = Math.floor(index / contactFirstNames.length);
+  const firstSurnameIndex = cursor % contactSurnames.length;
+  cursor = Math.floor(cursor / contactSurnames.length);
+  let secondSurnameIndex = cursor % (contactSurnames.length - 1);
+  if (secondSurnameIndex >= firstSurnameIndex) secondSurnameIndex += 1;
+  const baseName = `${firstName} ${contactSurnames[firstSurnameIndex]} ${contactSurnames[secondSurnameIndex]}`;
+  return { baseName, gender: index % contactFirstNames.length < maleContactNames.length ? 'male' : 'female' };
+}
 const connectionStatuses = [
   'en línea',
   'últ. vez hace 3 minutos',
@@ -463,13 +492,14 @@ function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIn
   const swap = loss ? 0 : reference.swapCents;
   const deposit = loss ? Math.max(50000, Math.abs(profit + swap) + 20000) : 0;
   const summary = { depositText: money(deposit), profitText: money(profit), swapText: money(swap), balanceText: money(deposit + profit + swap) };
-  const baseContactName = chatContacts[contactIndex % chatContacts.length];
+  const identity = contactIdentity(contactIndex);
+  const baseContactName = identity.baseName;
   const contact = {
     name: contactNameFormats[contactIndex % contactNameFormats.length](baseContactName),
     emoji: chatEmojis[contactIndex % chatEmojis.length],
     color: avatarColors[contactIndex % avatarColors.length]
   };
-  const avatarGender = femaleContactNames.has(baseContactName.split(' ')[0]) ? 'female' : 'male';
+  const avatarGender = identity.gender;
   const { message, emoji, chatTime, replyTime, statusTime } = phraseForScene(loss, region, summary, variantIndex, contactIndex, theme, avatarGender, ownerEmail);
   contact.emoji = emoji || contact.emoji;
   const batteryPercent = crypto.randomInt(10, 101);
