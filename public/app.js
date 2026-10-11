@@ -140,8 +140,16 @@ $('#phrase-form').addEventListener('submit',async(event)=>{
   finally{ button.disabled=false; }
 });
 
+$('#password-toggle').addEventListener('click',()=>{
+  const input=$('#password'); const visible=input.type==='text';
+  input.type=visible?'password':'text';
+  $('#password-toggle').setAttribute('aria-pressed',String(!visible));
+  $('#password-toggle').setAttribute('aria-label',visible?'Mostrar contraseña':'Ocultar contraseña');
+  input.focus();
+});
+
 $('#login-form').addEventListener('submit',async(event)=>{
-  event.preventDefault(); const button=event.currentTarget.querySelector('button'); $('#login-error').textContent=''; button.disabled=true; button.textContent='Ingresando…';
+  event.preventDefault(); const button=event.currentTarget.querySelector('button[type="submit"]'); $('#login-error').textContent=''; button.disabled=true; button.textContent='Ingresando…';
   try{ await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value})}); await bootApp(); }
   catch(error){ $('#login-error').textContent=error.message; }
   finally{ button.disabled=false; button.textContent='Entrar'; }
