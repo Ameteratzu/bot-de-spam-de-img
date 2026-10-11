@@ -7,3 +7,9 @@
 .image-card>.selection-check:hover,.image-card>.selection-check:focus-visible{background:#17221fe8;outline:3px solid #ffffff80;outline-offset:2px}
 .image-card.selected>.selection-check{background:var(--green);color:#fff}
 @media(max-width:620px){.image-card>.selection-check{width:34px;height:34px}}
+
+.download-day{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:0 11px;border-radius:9px;background:var(--green);color:#fff;text-decoration:none;font-size:11px;font-weight:800;white-space:nowrap}
+.image-card.downloaded{background:#edf1ef}
+.image-card.downloaded .image-open img{opacity:.48;filter:saturate(.65)}
+.image-card.downloaded .image-open::after{content:'DESCARGADA';position:absolute;left:9px;bottom:9px;padding:5px 8px;border-radius:999px;background:#17221fd9;color:#fff;font-size:9px;font-weight:850;letter-spacing:.06em}
+@media(max-width:620px){.day-heading{align-items:flex-start}.day-heading-actions{flex-wrap:wrap;justify-content:flex-end}.download-day{order:3}}

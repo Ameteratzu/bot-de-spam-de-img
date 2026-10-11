@@ -59,16 +59,20 @@ function renderGallery(data){
     const title=document.createElement('h3'); title.textContent=formatDay(group.dayKey);
     const actions=document.createElement('div'); actions.className='day-heading-actions';
     const count=document.createElement('span'); count.textContent=`${group.images.length} ${group.images.length===1?'imagen':'imágenes'}`;
+    const downloadDay=document.createElement('a'); downloadDay.className='download-day'; downloadDay.href=`/api/images/day/${group.dayKey}/download`; downloadDay.download=`testimonios-${group.dayKey}.zip`; downloadDay.textContent=`Descargar ${group.dailyPackIds.length} del día`;
+    downloadDay.addEventListener('click',()=>{const pack=new Set(group.dailyPackIds);group.images.forEach((image)=>{if(pack.has(image.id))image.downloaded=true;});document.querySelectorAll('.image-card').forEach((card)=>{if(pack.has(card.dataset.imageId))card.classList.add('downloaded');});showToast('Preparando el paquete del día…');});
     const selectDay=document.createElement('button'); selectDay.type='button'; selectDay.className='select-day'; selectDay.textContent='Seleccionar día';
     selectDay.addEventListener('click',()=>{const allSelected=group.images.every(image=>selectedIds.has(image.id));for(const image of group.images){allSelected?selectedIds.delete(image.id):selectedIds.add(image.id);}updateSelectionUI();selectDay.textContent=allSelected?'Seleccionar día':'Quitar día';});
-    actions.append(count,selectDay); heading.append(title,actions);
+    actions.append(count,downloadDay,selectDay); heading.append(title,actions);
     const grid=document.createElement('div'); grid.className='gallery-grid';
     for(const image of group.images){
       const card=$('#image-card-template').content.firstElementChild.cloneNode(true);
       card.dataset.imageId=image.id;
+      card.classList.toggle('downloaded',image.downloaded);
       const img=card.querySelector('img'); img.src=image.url; img.alt=`Imagen de chat de ${image.name}`;
       card.querySelector('strong').textContent=image.name; card.querySelector('.image-card-footer span').textContent=formatTime(image.createdAt);
-      card.querySelector('.download').href=image.downloadUrl;
+      const download=card.querySelector('.download'); download.href=image.downloadUrl;
+      download.addEventListener('click',()=>{image.downloaded=true;card.classList.add('downloaded');showToast('Imagen marcada como descargada.');});
       card.querySelector('.image-open').addEventListener('click',()=>selectionMode?toggleSelected(image.id):openViewer(image));
       card.querySelector('.selection-check').addEventListener('click',()=>{
         if(!selectionMode)setSelectionMode(true);

@@ -8,6 +8,7 @@ import session from 'express-session';
 import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
 import helmet from 'helmet';
+import { ZipArchive } from 'archiver';
 import { rateLimit } from 'express-rate-limit';
 import sharp from 'sharp';
 import { renderTelegramChat, conversationText } from './telegram-compositor.js';
@@ -84,6 +85,7 @@ function ensureColumn(table, column, definition) {
 // records for Alexander, then isolate all new records by authenticated email.
 ensureColumn('images', 'owner_email', `TEXT NOT NULL DEFAULT '${ALEXANDER_EMAIL.replaceAll("'", "''")}'`);
 ensureColumn('images', 'batch_id', 'TEXT');
+ensureColumn('images', 'downloaded_at', 'TEXT');
 ensureColumn('template_previews', 'owner_email', `TEXT NOT NULL DEFAULT '${ALEXANDER_EMAIL.replaceAll("'", "''")}'`);
 ensureColumn('phrase_templates', 'owner_email', `TEXT NOT NULL DEFAULT '${ALEXANDER_EMAIL.replaceAll("'", "''")}'`);
 db.exec(`
@@ -614,6 +616,7 @@ function imagePayload(row) {
     createdAt: row.created_at,
     url: `/api/images/${row.id}/file`,
     downloadUrl: `/api/images/${row.id}/file?download=1`,
+    downloaded: Boolean(row.downloaded_at),
     source: row.filename.includes('-original-') ? 'authentic' : row.filename.includes('-plantilla-') ? 'template' : 'ai'
   };
 }
@@ -715,17 +718,44 @@ function runDailyGenerator() {
 }
 
 app.get('/api/images', requireAuth, (req, res) => {
-  const rows = db.prepare('SELECT * FROM images WHERE owner_email = ? ORDER BY day_key DESC, created_at DESC LIMIT 500').all(req.session.email);
+  const rows = db.prepare(`SELECT images.*, generation_batches.kind AS batch_kind
+    FROM images LEFT JOIN generation_batches ON generation_batches.id = images.batch_id
+    WHERE images.owner_email = ? ORDER BY images.day_key DESC, images.created_at DESC LIMIT 500`).all(req.session.email);
   const grouped = [];
   for (const row of rows) {
     let group = grouped.at(-1);
     if (!group || group.dayKey !== row.day_key) {
-      group = { dayKey: row.day_key, images: [] };
+      group = { dayKey: row.day_key, images: [], dailyPackIds: [] };
       grouped.push(group);
     }
     group.images.push(imagePayload(row));
+    if (row.batch_kind === 'automatic' && group.dailyPackIds.length < 10) group.dailyPackIds.push(row.id);
   }
+  for (const group of grouped) if (!group.dailyPackIds.length) group.dailyPackIds = group.images.slice(0, 10).map((image) => image.id);
   res.json({ groups: grouped, total: rows.length, today: usageToday(req.session.email), timezone: TIME_ZONE });
+});
+
+app.get('/api/images/day/:dayKey/download', requireAuth, (req, res) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.dayKey)) return res.status(400).json({ error: 'La fecha no es válida.' });
+  let rows = db.prepare(`SELECT images.* FROM images
+    JOIN generation_batches ON generation_batches.id = images.batch_id
+    WHERE images.owner_email = ? AND images.day_key = ? AND generation_batches.kind = 'automatic'
+    ORDER BY images.created_at ASC LIMIT 10`).all(req.session.email, req.params.dayKey);
+  if (!rows.length) rows = db.prepare('SELECT * FROM images WHERE owner_email = ? AND day_key = ? ORDER BY created_at DESC LIMIT 10').all(req.session.email, req.params.dayKey);
+  rows = rows.filter((row) => fs.existsSync(path.join(IMAGE_DIR, path.basename(row.filename))));
+  if (!rows.length) return res.status(404).json({ error: 'No hay imágenes disponibles para ese día.' });
+
+  const downloadedAt = new Date().toISOString();
+  db.transaction(() => {
+    const mark = db.prepare('UPDATE images SET downloaded_at = ? WHERE id = ? AND owner_email = ?');
+    for (const row of rows) mark.run(downloadedAt, row.id, req.session.email);
+  })();
+  res.attachment(`testimonios-${req.params.dayKey}.zip`);
+  const archive = new ZipArchive({ zlib: { level: 7 } });
+  archive.on('error', (error) => { if (!res.headersSent) res.status(500).json({ error: 'No se pudo preparar el paquete.' }); else res.destroy(error); });
+  archive.pipe(res);
+  rows.forEach((row, index) => archive.file(path.join(IMAGE_DIR, path.basename(row.filename)), { name: `${String(index + 1).padStart(2, '0')}-${row.filename}` }));
+  void archive.finalize();
 });
 
 app.delete('/api/images', requireAuth, (req, res) => {
@@ -814,7 +844,10 @@ app.get('/api/images/:id/file', requireAuth, (req, res) => {
   if (!row) return res.status(404).json({ error: 'No encontramos esa imagen.' });
   const safePath = path.join(IMAGE_DIR, path.basename(row.filename));
   if (!fs.existsSync(safePath)) return res.status(404).json({ error: 'El archivo de imagen ya no está disponible.' });
-  if (req.query.download === '1') res.setHeader('Content-Disposition', `attachment; filename="${row.filename}"`);
+  if (req.query.download === '1') {
+    db.prepare('UPDATE images SET downloaded_at = ? WHERE id = ? AND owner_email = ?').run(new Date().toISOString(), row.id, req.session.email);
+    res.setHeader('Content-Disposition', `attachment; filename="${row.filename}"`);
+  }
   res.type(row.mime_type).sendFile(safePath);
 });
 
