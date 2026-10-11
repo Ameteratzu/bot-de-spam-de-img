@@ -322,9 +322,18 @@ const tradeReferences = [
 const chatContacts = [
   'Mateo Rojas', 'Camila Torres', 'Andrés Mejía', 'Sofía Paredes', 'Daniel Vargas',
   'Lucía Herrera', 'Nicolás Muñoz', 'Valentina Cruz', 'Joaquín Salazar', 'Mariana Soto',
-  'Gabriel Molina', 'Renata Castillo', 'Emilio Núñez', 'Isabella Reyes'
+  'Gabriel Molina', 'Renata Castillo', 'Emilio Núñez', 'Isabella Reyes', 'Sebastián Romero',
+  'Paula Mendoza', 'Alejandro Peña', 'Natalia Guzmán', 'Carlos Peralta', 'Laura Jiménez'
 ];
-const femaleContactNames = new Set(['Camila', 'Sofía', 'Lucía', 'Valentina', 'Mariana', 'Renata', 'Isabella']);
+const femaleContactNames = new Set(['Camila', 'Sofía', 'Lucía', 'Valentina', 'Mariana', 'Renata', 'Isabella', 'Paula', 'Natalia', 'Laura']);
+const contactNameFormats = [
+  (name) => name,
+  (name) => `${name} Comunidad VIP`,
+  (name) => `${name.split(' ')[0]} IA`,
+  (name) => `${name} VIP`,
+  () => 'COMUNIDAD VIP',
+  (name) => `${name.split(' ')[0]} Trading`
+];
 const connectionStatuses = [
   'en línea',
   'últ. vez hace 3 minutos',
@@ -454,12 +463,13 @@ function tradeBrief(reference, region, loss = false, variantIndex = 0, contactIn
   const swap = loss ? 0 : reference.swapCents;
   const deposit = loss ? Math.max(50000, Math.abs(profit + swap) + 20000) : 0;
   const summary = { depositText: money(deposit), profitText: money(profit), swapText: money(swap), balanceText: money(deposit + profit + swap) };
+  const baseContactName = chatContacts[contactIndex % chatContacts.length];
   const contact = {
-    name: chatContacts[contactIndex % chatContacts.length],
+    name: contactNameFormats[contactIndex % contactNameFormats.length](baseContactName),
     emoji: chatEmojis[contactIndex % chatEmojis.length],
     color: avatarColors[contactIndex % avatarColors.length]
   };
-  const avatarGender = femaleContactNames.has(contact.name.split(' ')[0]) ? 'female' : 'male';
+  const avatarGender = femaleContactNames.has(baseContactName.split(' ')[0]) ? 'female' : 'male';
   const { message, emoji, chatTime, replyTime, statusTime } = phraseForScene(loss, region, summary, variantIndex, contactIndex, theme, avatarGender, ownerEmail);
   contact.emoji = emoji || contact.emoji;
   const batteryPercent = crypto.randomInt(10, 101);
